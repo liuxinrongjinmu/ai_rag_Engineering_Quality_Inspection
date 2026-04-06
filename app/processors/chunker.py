@@ -344,6 +344,11 @@ class TextChunker:
         return {
             "content": content,
             "index": index,
+            "doc_id": metadata.get("doc_id", ""),
+            "doc_name": metadata.get("doc_name", ""),
+            "page": metadata.get("page"),
+            "section": metadata.get("section"),
+            "source_type": metadata.get("source_type", "local"),
             "metadata": metadata.copy()
         }
     

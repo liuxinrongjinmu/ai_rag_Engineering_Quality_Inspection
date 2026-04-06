@@ -41,20 +41,31 @@ def test_query(question: str, use_web_search: bool = True, top_k: int = 5):
             print(f"\n【答案】")
             print(data['answer'])
             
-            print(f"\n【来源信息】({len(data['sources'])}个)")
-            for i, source in enumerate(data['sources'], 1):
-                source_type = "本地知识库" if source['source_type'] == 'local' else "网络来源"
-                print(f"  {i}. {source['doc_name']}")
-                if source.get('page'):
-                    print(f"     页码: 第{source['page']}页")
-                if source.get('section'):
-                    print(f"     章节: {source['section']}")
-                print(f"     类型: {source_type}")
-                if source.get('url'):
-                    print(f"     URL: {source['url']}")
+            sources = data['sources']
+            unique_docs = {}
+            for source in sources:
+                doc_name = source.get('doc_name', '未知文档')
+                if doc_name not in unique_docs:
+                    unique_docs[doc_name] = source
+            
+            print(f"\n【来源信息】({len(unique_docs)}个文档)")
+            for i, (doc_name, source) in enumerate(unique_docs.items(), 1):
+                source_type = source.get('source_type', 'local')
+                if source_type == 'web':
+                    print(f"  {i}. {doc_name}")
+                    if source.get('url'):
+                        print(f"     URL: {source['url']}")
+                    print(f"     类型: 网络来源")
+                else:
+                    print(f"  {i}. {doc_name}")
+                    if source.get('page'):
+                        print(f"     页码: 第{source['page']}页")
+                    if source.get('section'):
+                        print(f"     章节: {source['section']}")
+                    print(f"     类型: 本地知识库")
             
             print(f"\n【统计信息】")
-            print(f"  查询耗时: {data['query_time_ms']}ms")
+            print(f"  服务器耗时: {data['query_time_ms']}ms")
             print(f"  实际耗时: {elapsed_time:.2f}s")
             print(f"  使用网络检索: {'是' if data['used_web_search'] else '否'}")
         else:

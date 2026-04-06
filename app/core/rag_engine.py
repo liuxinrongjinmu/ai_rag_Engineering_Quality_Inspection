@@ -2,7 +2,7 @@
 RAG引擎
 结合检索和生成，实现问答功能
 """
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Generator
 from loguru import logger
 import time
 
@@ -186,6 +186,72 @@ class RAGEngine:
                 "answer": "抱歉，生成答案时出现错误，请稍后重试。",
                 "success": False
             }
+    
+    def stream_generate(
+        self,
+        query: str,
+        results: List[SearchResult]
+    ) -> Generator[str, None, None]:
+        """
+        流式生成答案
+        
+        :param query: 用户问题
+        :param results: 检索结果
+        :yield: 生成的文本片段
+        """
+        if not self._client:
+            if not self.initialize():
+                yield "抱歉，系统暂时无法生成答案，请稍后重试。"
+                return
+        
+        context = self.build_context(results)
+        
+        if not context:
+            yield "抱歉，没有找到相关的参考资料来回答您的问题。"
+            return
+        
+        prompt = f"""请基于以下参考资料回答用户问题。
+
+{context}
+
+用户问题：{query}
+
+【回答要求】
+1. 直接从参考资料中提取相关信息，完整回答问题
+2. 如果资料中有表格，请完整呈现表格内容（包括所有行和列）
+3. 不要说"参考资料中没有"或"未找到"，而是提取已有信息
+4. 标注具体来源（文档名称、页码等）
+
+请开始回答："""
+        
+        try:
+            from dashscope import Generation
+            
+            responses = Generation.call(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self.SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt}
+                ],
+                result_format='message',
+                max_tokens=1000,
+                temperature=0.1,
+                stream=True
+            )
+            
+            for response in responses:
+                if response.status_code == 200:
+                    content = response.output.choices[0].message.content
+                    if content:
+                        yield content
+                else:
+                    logger.error(f"流式生成失败: {response.code} - {response.message}")
+                    yield f"\n\n[错误: {response.message}]"
+                    break
+                    
+        except Exception as e:
+            logger.error(f"流式生成失败: {e}")
+            yield "\n\n抱歉，生成答案时出现错误，请稍后重试。"
     
     def evaluate_answer_quality(
         self,

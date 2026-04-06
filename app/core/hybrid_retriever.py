@@ -5,6 +5,8 @@
 from typing import List, Dict, Any, Optional
 from loguru import logger
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 
 from app.config import get_settings
 from app.retrievers.local_retriever import LocalRetriever, get_local_retriever
@@ -90,7 +92,7 @@ class HybridRetriever:
         use_web_search: Optional[bool] = None
     ) -> Dict[str, Any]:
         """
-        执行混合检索
+        执行混合检索（并行优化版）
         
         :param query: 查询文本
         :param use_web_search: 是否使用网络检索
@@ -106,23 +108,37 @@ class HybridRetriever:
         if rewritten_query != query:
             queries.append(rewritten_query)
         
-        # 2. 向量检索
+        # 2. 并行执行向量检索和BM25检索
         vector_results = []
-        for q in queries:
-            results = self.vector_retriever.retrieve(q, top_k=self.top_k * 2)
-            vector_results.extend(results)
-        
-        # 3. BM25检索
         bm25_results = []
-        if self.bm25_retriever.is_initialized():
-            for q in queries:
-                results = self.bm25_retriever.retrieve(q, top_k=self.top_k * 2)
-                bm25_results.extend(results)
         
-        # 4. 融合向量检索和BM25检索结果
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {}
+            
+            for q in queries:
+                futures[f"vector_{q}"] = executor.submit(
+                    self.vector_retriever.retrieve, q, self.top_k * 2
+                )
+                
+                if self.bm25_retriever.is_initialized():
+                    futures[f"bm25_{q}"] = executor.submit(
+                        self.bm25_retriever.retrieve, q, self.top_k * 2
+                    )
+            
+            for key, future in futures.items():
+                try:
+                    results = future.result(timeout=10)
+                    if key.startswith("vector"):
+                        vector_results.extend(results)
+                    else:
+                        bm25_results.extend(results)
+                except Exception as e:
+                    logger.warning(f"并行检索失败 {key}: {e}")
+        
+        # 3. 融合向量检索和BM25检索结果
         fused_results = self._fuse_results(vector_results, bm25_results)
         
-        # 5. 判断是否需要网络检索
+        # 4. 判断是否需要网络检索
         web_results: List[WebSearchResult] = []
         used_web_search = False
         
@@ -135,7 +151,7 @@ class HybridRetriever:
             except Exception as e:
                 logger.warning(f"网络检索失败: {e}")
         
-        # 6. 重排序
+        # 5. 重排序
         final_results = self.reranker.rerank(
             local_results=fused_results[:self.top_k],
             web_results=web_results,

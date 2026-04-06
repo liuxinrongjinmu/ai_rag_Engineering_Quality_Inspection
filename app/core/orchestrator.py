@@ -2,7 +2,7 @@
 查询编排器
 协调整个问答流程
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Generator
 from loguru import logger
 from pathlib import Path
 import time
@@ -13,6 +13,7 @@ from app.core.rag_engine import RAGEngine, get_rag_engine
 from app.retrievers.local_retriever import get_local_retriever
 from app.retrievers.bm25_retriever import get_bm25_retriever
 from app.models.response import QueryData, SourceInfo
+from app.utils.cache import get_query_cache
 
 
 class QueryOrchestrator:
@@ -75,14 +76,16 @@ class QueryOrchestrator:
         self,
         question: str,
         use_web_search: bool = True,
-        top_k: int = 5
+        top_k: int = 5,
+        use_cache: bool = True
     ) -> QueryData:
         """
-        处理查询
+        处理查询（带缓存优化）
         
         :param question: 用户问题
         :param use_web_search: 是否使用网络检索
         :param top_k: 返回结果数
+        :param use_cache: 是否使用缓存
         :return: 查询结果
         """
         start_time = time.time()
@@ -91,7 +94,16 @@ class QueryOrchestrator:
         
         logger.info(f"处理查询: {question[:50]}...")
         
-        # 执行检索
+        if use_cache:
+            cache = get_query_cache()
+            cached_result = cache.get(question, use_web_search)
+            
+            if cached_result:
+                cached_result['query_time_ms'] = int((time.time() - start_time) * 1000)
+                cached_result['used_web_search'] = cached_result.get('used_web_search', False)
+                logger.info(f"缓存命中，返回缓存结果")
+                return QueryData(**cached_result)
+        
         retrieval_result = self.hybrid_retriever.retrieve(
             query=question,
             use_web_search=use_web_search
@@ -113,7 +125,6 @@ class QueryOrchestrator:
                 used_web_search=False
             )
         
-        # 生成答案
         generation_result = self.rag_engine.generate(
             query=question,
             results=results
@@ -121,19 +132,28 @@ class QueryOrchestrator:
         
         answer = generation_result["answer"]
         
-        # 提取来源信息
         sources = self.rag_engine.extract_sources(results)
         
         query_time = int((time.time() - start_time) * 1000)
         
         logger.info(f"查询完成: 耗时{query_time}ms")
         
-        return QueryData(
+        result_data = QueryData(
             answer=answer,
             sources=sources,
             query_time_ms=query_time,
             used_web_search=used_web_search
         )
+        
+        if use_cache:
+            cache = get_query_cache()
+            cache.set(
+                question=question,
+                data=result_data.model_dump(),
+                use_web_search=use_web_search
+            )
+        
+        return result_data
     
     def get_source_detail(self, chunk_id: str) -> Optional[Dict[str, Any]]:
         """

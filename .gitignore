@@ -45,6 +45,9 @@ logs/
 # Vector Database (Large files, regenerate on server)
 data/vectordb/
 
+# Milvus volumes (Docker data)
+volumes/
+
 # Raw PDF files (Large files)
 data/raw/*.pdf
 
