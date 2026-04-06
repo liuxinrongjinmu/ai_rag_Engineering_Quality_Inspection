@@ -40,6 +40,7 @@ class SourceInfo(BaseModel):
     """
     来源信息
     """
+    chunk_id: str = Field(..., description="切片ID")
     doc_id: str = Field(..., description="文档ID")
     doc_name: str = Field(..., description="文档名称")
     page: Optional[int] = Field(None, description="页码")

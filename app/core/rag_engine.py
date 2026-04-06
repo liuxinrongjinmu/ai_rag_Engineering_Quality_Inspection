@@ -334,6 +334,7 @@ class RAGEngine:
             chunk = result.chunk
             
             source = SourceInfo(
+                chunk_id=chunk.chunk_id,
                 doc_id=chunk.doc_id,
                 doc_name=chunk.doc_name,
                 page=chunk.page,
