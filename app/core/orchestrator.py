@@ -60,7 +60,7 @@ class QueryOrchestrator:
         """
         加载BM25索引
         """
-        bm25_path = Path(self.settings.CHROMA_PERSIST_DIRECTORY) / "bm25_index.pkl"
+        bm25_path = Path(self.settings.BM25_INDEX_PATH)
         
         if bm25_path.exists():
             bm25_retriever = get_bm25_retriever()
@@ -120,13 +120,6 @@ class QueryOrchestrator:
         )
         
         answer = generation_result["answer"]
-        
-        # 内部评估答案质量（不返回给用户）
-        self.rag_engine.evaluate_answer_quality(
-            query=question,
-            answer=answer,
-            sources=results
-        )
         
         # 提取来源信息
         sources = self.rag_engine.extract_sources(results)

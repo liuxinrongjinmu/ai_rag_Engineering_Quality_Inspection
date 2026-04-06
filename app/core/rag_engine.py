@@ -36,7 +36,7 @@ class RAGEngine:
 - 不要因为表格内容较长就说"未完整展示"或"部分内容"
 - 对于检测项目代码、检测频率等关键信息，必须完整列出"""
 
-    def __init__(self, api_key: str, model: str = "qwen-plus"):
+    def __init__(self, api_key: str, model: str = "qwen-turbo"):
         """
         初始化RAG引擎
         
@@ -163,7 +163,7 @@ class RAGEngine:
                     {"role": "user", "content": prompt}
                 ],
                 result_format='message',
-                max_tokens=2000,
+                max_tokens=1000,  # 减少生成token数
                 temperature=0.1
             )
             

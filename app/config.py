@@ -18,18 +18,36 @@ class Settings(BaseSettings):
     
     TAVILY_API_KEY: str = Field(..., description="Tavily搜索API Key")
     
-    CHROMA_PERSIST_DIRECTORY: str = Field(
-        default="./data/vectordb",
-        description="ChromaDB持久化目录"
+    # Milvus配置
+    MILVUS_HOST: str = Field(
+        default="localhost",
+        description="Milvus服务地址"
     )
     
-    CHROMA_COLLECTION_NAME: str = Field(
+    MILVUS_PORT: int = Field(
+        default=19530,
+        description="Milvus服务端口"
+    )
+    
+    MILVUS_COLLECTION_NAME: str = Field(
         default="engineering_qa",
-        description="ChromaDB集合名称"
+        description="Milvus集合名称"
     )
     
-    CHUNK_SIZE: int = Field(default=500, description="文本切片大小")
-    CHUNK_OVERLAP: int = Field(default=100, description="切片重叠字符数")
+    # 向量维度（DashScope text-embedding-v2 输出1536维）
+    EMBEDDING_DIM: int = Field(
+        default=1536,
+        description="向量维度"
+    )
+    
+    # BM25索引存储路径
+    BM25_INDEX_PATH: str = Field(
+        default="./data/vectordb/bm25_index.pkl",
+        description="BM25索引存储路径"
+    )
+    
+    CHUNK_SIZE: int = Field(default=1000, description="文本切片大小")
+    CHUNK_OVERLAP: int = Field(default=200, description="切片重叠字符数")
     TOP_K_RESULTS: int = Field(default=5, description="检索返回结果数")
     
     API_HOST: str = Field(default="0.0.0.0", description="API服务主机")

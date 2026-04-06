@@ -230,7 +230,7 @@ _hybrid_retriever_instance: Optional[HybridRetriever] = None
 
 
 def get_hybrid_retriever(
-    top_k: int = 5,
+    top_k: int = 3,
     use_web_search: bool = True
 ) -> HybridRetriever:
     """

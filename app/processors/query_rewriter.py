@@ -97,10 +97,6 @@ class QueryRewriter:
         # 1. 规则替换
         rewritten = self._rule_based_rewrite(original_query)
         
-        # 2. 如果有API Key，使用LLM增强重写
-        if self.api_key and rewritten == original_query:
-            rewritten = self._llm_rewrite(original_query)
-        
         if rewritten != original_query:
             logger.info(f"查询重写: '{original_query}' -> '{rewritten}'")
         

@@ -10,6 +10,7 @@
 - [核心功能模块](#核心功能模块)
 - [实现路线](#实现路线)
 - [快速开始](#快速开始)
+- [Milvus部署](#milvus部署)
 - [API接口](#api接口)
 - [项目结构](#项目结构)
 - [配置说明](#配置说明)
@@ -67,7 +68,7 @@
                     ┌───────────────┼───────────────┐
                     ▼               ▼               ▼
             ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-            │ Vector Store │ │ BM25 Retriever│ │ Reranker     │
+            │ Milvus       │ │ BM25 Retriever│ │ Reranker     │
             │ (向量检索)    │ │ (关键词检索)  │ │ (重排序)      │
             └──────────────┘ └──────────────┘ └──────────────┘
                                     │
@@ -115,7 +116,17 @@
 
 | 技术 | 版本 | 选型原因 |
 |------|------|----------|
-| **ChromaDB** | 0.4.22 | 轻量级嵌入式向量数据库，无需额外部署，支持持久化存储 |
+| **Milvus** | 2.3.3 | 开源分布式向量数据库，支持十亿级向量检索，高性能、可扩展 |
+
+**Milvus vs ChromaDB 对比：**
+
+| 维度 | Milvus | ChromaDB |
+|------|--------|----------|
+| 架构 | 分布式集群 | 嵌入式/轻量级 |
+| 数据规模 | 十亿级向量 | 百万级向量 |
+| 部署方式 | Docker/K8s | pip安装 |
+| 性能 | 高性能，支持GPU加速 | 单机性能 |
+| 适用场景 | 企业级生产环境 | 原型开发、中小型项目 |
 
 ### Embedding模型
 
@@ -255,7 +266,7 @@ MIN_CHUNK_SIZE = 100   # 最小切片
 │    └── 向量化（DashScope API）                               │
 ├─────────────────────────────────────────────────────────────┤
 │ 3. 向量存储                                                  │
-│    ├── ChromaDB初始化                                        │
+│    ├── Milvus初始化                                          │
 │    ├── 切片入库                                              │
 │    └── 相似度检索                                            │
 └─────────────────────────────────────────────────────────────┘
@@ -324,6 +335,7 @@ MIN_CHUNK_SIZE = 100   # 最小切片
 ### 1. 环境要求
 
 - Python 3.10+
+- Docker & Docker Compose（用于Milvus）
 - Windows/Linux/macOS
 
 ### 2. 安装依赖
@@ -332,7 +344,19 @@ MIN_CHUNK_SIZE = 100   # 最小切片
 pip install -r requirements.txt
 ```
 
-### 3. 配置环境变量
+### 3. 启动Milvus
+
+```bash
+# 启动Milvus服务
+docker-compose up -d
+
+# 查看服务状态
+docker-compose ps
+
+# 等待Milvus完全启动（约30秒）
+```
+
+### 4. 配置环境变量
 
 ```bash
 # 复制配置模板
@@ -349,13 +373,17 @@ DASHSCOPE_API_KEY=sk-xxxxxxxx
 
 # Tavily API Key（用于网络检索）
 TAVILY_API_KEY=tvly-xxxxxxxx
+
+# Milvus配置
+MILVUS_HOST=localhost
+MILVUS_PORT=19530
 ```
 
 **获取API Key：**
 - DashScope: https://dashscope.console.aliyun.com/
 - Tavily: https://tavily.com/
 
-### 4. 数据入库
+### 5. 数据入库
 
 ```bash
 python scripts/ingest.py
@@ -365,10 +393,10 @@ python scripts/ingest.py
 1. 扫描 `data/processed/` 目录下的文件
 2. 解析Markdown和Excel文件
 3. 文本切片（1000字符/块）
-4. 向量化并写入ChromaDB
+4. 向量化并写入Milvus
 5. 构建BM25索引
 
-### 5. 启动服务
+### 6. 启动服务
 
 ```bash
 # 方式一：直接启动
@@ -378,11 +406,11 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### 6. 访问API文档
+### 7. 访问API文档
 
-打开浏览器访问：**http://localhost:8000/docs**
+打开浏览器访问：**http://localhost:5001/docs**
 
-### 7. 测试系统
+### 8. 测试系统
 
 ```bash
 # 交互式测试
@@ -392,6 +420,58 @@ python test_api.py
 # 1 - 运行预设测试场景
 # 2 - 交互模式（输入自己的问题）
 # 3 - 健康检查
+```
+
+---
+
+## Milvus部署
+
+### Docker Compose部署（推荐）
+
+项目已包含 `docker-compose.yml` 配置文件，一键启动：
+
+```bash
+# 启动Milvus
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f standalone
+
+# 停止服务
+docker-compose down
+```
+
+### 服务端口说明
+
+| 服务 | 端口 | 说明 |
+|------|------|------|
+| Milvus | 19530 | 向量数据库服务端口 |
+| MinIO | 9000 | 对象存储服务 |
+| MinIO Console | 9001 | MinIO管理界面 |
+| etcd | 2379 | 元数据存储 |
+
+### 资源要求
+
+| 资源 | 最低要求 | 推荐配置 |
+|------|----------|----------|
+| CPU | 2核 | 4核+ |
+| 内存 | 8GB | 16GB+ |
+| 磁盘 | 20GB | 50GB+ SSD |
+
+### 常用命令
+
+```bash
+# 查看Milvus状态
+docker-compose ps
+
+# 查看Milvus日志
+docker-compose logs -f standalone
+
+# 重启Milvus
+docker-compose restart standalone
+
+# 停止并清理数据
+docker-compose down -v
 ```
 
 ---
@@ -492,7 +572,7 @@ GET /api/v1/health
 │   │   ├── excel_parser.py       # Excel解析
 │   │   └── query_rewriter.py     # 查询重写器
 │   ├── retrievers/               # 检索器
-│   │   ├── vector_store.py       # 向量存储
+│   │   ├── vector_store.py       # Milvus向量存储
 │   │   ├── local_retriever.py    # 本地检索
 │   │   ├── bm25_retriever.py     # BM25检索
 │   │   ├── web_retriever.py      # 网络检索
@@ -505,10 +585,10 @@ GET /api/v1/health
 │   ├── raw/                      # 原始数据（PDF/Excel）
 │   ├── processed/                # 处理后数据（Markdown/Excel）
 │   └── vectordb/                 # 向量数据库
-│       ├── chroma.sqlite3        # ChromaDB数据
 │       └── bm25_index.pkl        # BM25索引
 ├── scripts/
 │   └── ingest.py                 # 数据入库脚本
+├── docker-compose.yml            # Milvus Docker配置
 ├── docs/                         # 项目文档
 ├── logs/                         # 日志文件
 ├── test_api.py                   # 测试脚本
@@ -528,8 +608,11 @@ GET /api/v1/health
 |--------|------|--------|------|
 | `DASHSCOPE_API_KEY` | ✅ | - | 阿里云DashScope API Key |
 | `TAVILY_API_KEY` | ✅ | - | Tavily搜索API Key |
-| `CHROMA_PERSIST_DIRECTORY` | ❌ | `./data/vectordb` | 向量数据库存储路径 |
-| `CHROMA_COLLECTION_NAME` | ❌ | `engineering_qa` | ChromaDB集合名称 |
+| `MILVUS_HOST` | ❌ | `localhost` | Milvus服务地址 |
+| `MILVUS_PORT` | ❌ | `19530` | Milvus服务端口 |
+| `MILVUS_COLLECTION_NAME` | ❌ | `engineering_qa` | Milvus集合名称 |
+| `EMBEDDING_DIM` | ❌ | `1536` | 向量维度 |
+| `BM25_INDEX_PATH` | ❌ | `./data/vectordb/bm25_index.pkl` | BM25索引路径 |
 | `CHUNK_SIZE` | ❌ | `1000` | 文本切片大小 |
 | `CHUNK_OVERLAP` | ❌ | `200` | 切片重叠字符数 |
 | `TOP_K_RESULTS` | ❌ | `5` | 检索返回结果数 |
@@ -561,7 +644,7 @@ WEB_WEIGHT = 0.3       # 网络结果权重
 | 指标 | 目标值 | 实际值 |
 |------|--------|--------|
 | 检索准确率 | ≥ 80% | 待测试 |
-| 单次问答延迟 | < 20秒 | ~15秒 |
+| 单次问答延迟 | < 20秒 | < 10秒 |
 | 答案来源可追溯 | 100% | ✅ |
 | 网络检索补充 | 支持 | ✅ |
 
@@ -574,6 +657,7 @@ WEB_WEIGHT = 0.3       # 网络结果权重
 - [x] PDF扫描件无法解析 → 用户转换为Markdown格式
 - [x] 本地Embedding模型下载慢 → 改用DashScope API
 - [x] 置信度分数不直观 → 移除显示，改用内部质量评估
+- [x] ChromaDB扩展性不足 → 迁移到Milvus分布式向量数据库
 
 ### 待优化
 
@@ -587,4 +671,3 @@ WEB_WEIGHT = 0.3       # 网络结果权重
 ## 许可证
 
 MIT License
-

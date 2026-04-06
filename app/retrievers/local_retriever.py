@@ -1,11 +1,12 @@
 """
 本地检索器
-从向量数据库检索相关内容
+从Milvus向量数据库检索相关内容
 """
 from typing import List, Dict, Any, Optional
 from loguru import logger
 import numpy as np
 
+from app.config import get_settings
 from app.retrievers.vector_store import VectorStore, get_vectorstore
 from app.processors.embedder import Embedder, get_embedder
 from app.models.document import Chunk, SearchResult, SourceType
@@ -39,8 +40,15 @@ class LocalRetriever:
         
         :return: 是否成功
         """
+        settings = get_settings()
+        
         if self.vectorstore is None:
-            self.vectorstore = get_vectorstore()
+            self.vectorstore = get_vectorstore(
+                host=settings.MILVUS_HOST,
+                port=settings.MILVUS_PORT,
+                collection_name=settings.MILVUS_COLLECTION_NAME,
+                embedding_dim=settings.EMBEDDING_DIM
+            )
         
         if self.embedder is None:
             self.embedder = get_embedder()
@@ -79,18 +87,13 @@ class LocalRetriever:
         )
         
         search_results = []
-        if results["ids"] and results["ids"][0]:
-            for i, chunk_id in enumerate(results["ids"][0]):
-                metadata = results["metadatas"][0][i] if results.get("metadatas") else {}
-                document = results["documents"][0][i] if results.get("documents") else ""
-                distance = results["distances"][0][i] if results.get("distances") else 0
+        if results["ids"]:
+            for i, chunk_id in enumerate(results["ids"]):
+                metadata = results["metadatas"][i] if results.get("metadatas") else {}
+                document = results["documents"][i] if results.get("documents") else ""
+                distance = results["distances"][i] if results.get("distances") else 0
                 
-                # ChromaDB使用余弦距离，distance = 1 - cosine_similarity
-                # 所以 score = 1 - distance = cosine_similarity
-                # 但需要确保score在0-1范围内
-                score = 1 - distance
-                # 归一化到0-1范围
-                score = max(0.0, min(1.0, score))
+                score = max(0.0, min(1.0, distance))
                 
                 chunk = Chunk(
                     chunk_id=chunk_id,
