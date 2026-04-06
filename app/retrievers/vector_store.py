@@ -1,47 +1,38 @@
 """
 向量数据库模块
-使用Milvus进行向量存储和检索
+使用ChromaDB进行向量存储和检索
 """
 from typing import List, Dict, Any, Optional
 from loguru import logger
-from pymilvus import (
-    connections,
-    Collection,
-    CollectionSchema,
-    FieldSchema,
-    DataType,
-    utility
-)
 from pathlib import Path
-import json
+import chromadb
+from chromadb.config import Settings as ChromaSettings
 
 
 class VectorStore:
     """
-    向量数据库封装类 - Milvus实现
+    向量数据库封装类 - ChromaDB实现
     """
     
     def __init__(
         self,
-        host: str = "localhost",
-        port: int = 19530,
+        persist_dir: str = "./data/vectordb/chroma",
         collection_name: str = "engineering_qa",
         embedding_dim: int = 1536
     ):
         """
         初始化向量数据库
         
-        :param host: Milvus服务地址
-        :param port: Milvus服务端口
+        :param persist_dir: ChromaDB数据持久化目录
         :param collection_name: 集合名称
         :param embedding_dim: 向量维度
         """
-        self.host = host
-        self.port = port
+        self.persist_dir = persist_dir
         self.collection_name = collection_name
         self.embedding_dim = embedding_dim
         
-        self.collection: Optional[Collection] = None
+        self.client: Optional[chromadb.Client] = None
+        self.collection: Optional[chromadb.Collection] = None
         self._initialized = False
     
     def initialize(self) -> bool:
@@ -51,64 +42,28 @@ class VectorStore:
         :return: 是否成功初始化
         """
         try:
-            connections.connect(
-                alias="default",
-                host=self.host,
-                port=self.port
+            persist_path = Path(self.persist_dir)
+            persist_path.mkdir(parents=True, exist_ok=True)
+            
+            self.client = chromadb.PersistentClient(
+                path=str(persist_path),
+                settings=ChromaSettings(
+                    anonymized_telemetry=False,
+                    allow_reset=True
+                )
             )
             
-            if utility.has_collection(self.collection_name):
-                self.collection = Collection(self.collection_name)
-            else:
-                self.collection = self._create_collection()
+            self.collection = self.client.get_or_create_collection(
+                name=self.collection_name,
+                metadata={"hnsw:space": "cosine"}
+            )
             
-            self.collection.load()
             self._initialized = True
-            logger.info(f"Milvus连接成功: {self.host}:{self.port}, 集合: {self.collection_name}")
+            logger.info(f"ChromaDB连接成功: {self.persist_dir}, 集合: {self.collection_name}")
             return True
         except Exception as e:
-            logger.error(f"Milvus连接失败: {e}")
+            logger.error(f"ChromaDB连接失败: {e}")
             return False
-    
-    def _create_collection(self) -> Collection:
-        """
-        创建集合
-        
-        :return: Collection对象
-        """
-        fields = [
-            FieldSchema(name="chunk_id", dtype=DataType.VARCHAR, max_length=64, is_primary=True, auto_id=False),
-            FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=self.embedding_dim),
-            FieldSchema(name="content", dtype=DataType.VARCHAR, max_length=65535),
-            FieldSchema(name="doc_id", dtype=DataType.VARCHAR, max_length=64),
-            FieldSchema(name="doc_name", dtype=DataType.VARCHAR, max_length=512),
-            FieldSchema(name="page", dtype=DataType.INT64),
-            FieldSchema(name="section", dtype=DataType.VARCHAR, max_length=256),
-            FieldSchema(name="source_type", dtype=DataType.VARCHAR, max_length=32)
-        ]
-        
-        schema = CollectionSchema(
-            fields=fields,
-            description="工程质检知识库向量存储"
-        )
-        
-        collection = Collection(
-            name=self.collection_name,
-            schema=schema
-        )
-        
-        index_params = {
-            "metric_type": "COSINE",
-            "index_type": "IVF_FLAT",
-            "params": {"nlist": 128}
-        }
-        collection.create_index(
-            field_name="embedding",
-            index_params=index_params
-        )
-        
-        logger.info(f"创建Milvus集合: {self.collection_name}")
-        return collection
     
     def is_initialized(self) -> bool:
         """
@@ -139,55 +94,44 @@ class VectorStore:
         for i in range(0, len(chunks), batch_size):
             batch = chunks[i:i + batch_size]
             
-            chunk_ids = []
+            ids = []
             embeddings = []
-            contents = []
-            doc_ids = []
-            doc_names = []
-            pages = []
-            sections = []
-            source_types = []
+            documents = []
+            metadatas = []
             
             for chunk in batch:
                 if "embedding" not in chunk:
                     continue
                 
-                chunk_ids.append(chunk["chunk_id"])
+                chunk_id = chunk.get("chunk_id", "")
+                if not chunk_id:
+                    continue
+                
+                ids.append(chunk_id)
                 embeddings.append(chunk["embedding"])
+                documents.append(chunk.get("content", ""))
                 
-                content_val = chunk.get("content", "") or ""
-                contents.append(content_val[:65535] if len(content_val) > 65535 else content_val)
-                
-                doc_ids.append(chunk.get("doc_id", "") or "")
-                
-                doc_name_val = chunk.get("doc_name", "") or ""
-                doc_names.append(doc_name_val[:512] if len(doc_name_val) > 512 else doc_name_val)
-                
-                page_val = chunk.get("page")
-                pages.append(page_val if page_val else 0)
-                
-                section_val = chunk.get("section", "") or ""
-                sections.append(section_val[:256] if len(section_val) > 256 else section_val)
-                
-                source_types.append(chunk.get("source_type", "local") or "local")
+                metadata = {
+                    "doc_id": chunk.get("doc_id", ""),
+                    "doc_name": chunk.get("doc_name", ""),
+                    "page": chunk.get("page", 0) or 0,
+                    "section": chunk.get("section", "") or "",
+                    "source_type": chunk.get("source_type", "local") or "local"
+                }
+                metadatas.append(metadata)
             
-            if chunk_ids:
+            if ids:
                 try:
-                    self.collection.insert([
-                        chunk_ids,
-                        embeddings,
-                        contents,
-                        doc_ids,
-                        doc_names,
-                        pages,
-                        sections,
-                        source_types
-                    ])
-                    added_count += len(chunk_ids)
+                    self.collection.add(
+                        ids=ids,
+                        embeddings=embeddings,
+                        documents=documents,
+                        metadatas=metadatas
+                    )
+                    added_count += len(ids)
                 except Exception as e:
                     logger.error(f"添加切片失败: {e}")
         
-        self.collection.flush()
         logger.info(f"添加切片完成: {added_count}个")
         return added_count
     
@@ -202,7 +146,7 @@ class VectorStore:
         
         :param query_embedding: 查询向量
         :param top_k: 返回数量
-        :param where: 元数据过滤条件（暂不支持）
+        :param where: 元数据过滤条件
         :return: 检索结果
         """
         if not self.is_initialized():
@@ -210,41 +154,23 @@ class VectorStore:
             return {"ids": [], "documents": [], "metadatas": [], "distances": []}
         
         try:
-            search_params = {"metric_type": "COSINE", "params": {"nprobe": 16}}
-            
-            results = self.collection.search(
-                data=[query_embedding],
-                anns_field="embedding",
-                param=search_params,
-                limit=top_k,
-                output_fields=["content", "doc_id", "doc_name", "page", "section", "source_type"]
+            results = self.collection.query(
+                query_embeddings=[query_embedding],
+                n_results=top_k,
+                where=where,
+                include=["documents", "metadatas", "distances"]
             )
             
-            ids = []
-            documents = []
-            metadatas = []
-            distances = []
-            
-            for hits in results:
-                for hit in hits:
-                    ids.append(hit.id)
-                    distances.append(1 - hit.distance)
-                    
-                    entity = hit.entity
-                    documents.append(entity.get("content", ""))
-                    metadatas.append({
-                        "doc_id": entity.get("doc_id", ""),
-                        "doc_name": entity.get("doc_name", ""),
-                        "page": entity.get("page", 0),
-                        "section": entity.get("section", ""),
-                        "source_type": entity.get("source_type", "local")
-                    })
+            ids = results.get("ids", [[]])[0]
+            documents = results.get("documents", [[]])[0]
+            metadatas = results.get("metadatas", [[]])[0]
+            distances = results.get("distances", [[]])[0]
             
             return {
                 "ids": ids,
                 "documents": documents,
                 "metadatas": metadatas,
-                "distances": distances
+                "distances": [1 - d for d in distances]  # ChromaDB返回距离，转换为相似度
             }
         except Exception as e:
             logger.error(f"向量检索失败: {e}")
@@ -261,24 +187,17 @@ class VectorStore:
             return None
         
         try:
-            results = self.collection.query(
-                expr=f'chunk_id == "{chunk_id}"',
-                output_fields=["content", "doc_id", "doc_name", "page", "section", "source_type", "embedding"]
+            results = self.collection.get(
+                ids=[chunk_id],
+                include=["documents", "metadatas", "embeddings"]
             )
             
-            if results:
-                result = results[0]
+            if results and results.get("ids"):
                 return {
                     "chunk_id": chunk_id,
-                    "content": result.get("content", ""),
-                    "metadata": {
-                        "doc_id": result.get("doc_id", ""),
-                        "doc_name": result.get("doc_name", ""),
-                        "page": result.get("page", 0),
-                        "section": result.get("section", ""),
-                        "source_type": result.get("source_type", "local")
-                    },
-                    "embedding": result.get("embedding")
+                    "content": results["documents"][0] if results.get("documents") else "",
+                    "metadata": results["metadatas"][0] if results.get("metadatas") else {},
+                    "embedding": results["embeddings"][0] if results.get("embeddings") else None
                 }
             return None
         except Exception as e:
@@ -296,9 +215,14 @@ class VectorStore:
             return False
         
         try:
-            self.collection.delete(expr=f'doc_id == "{doc_id}"')
-            self.collection.flush()
-            logger.info(f"删除文档切片: {doc_id}")
+            results = self.collection.get(
+                where={"doc_id": doc_id},
+                include=[]
+            )
+            
+            if results and results.get("ids"):
+                self.collection.delete(ids=results["ids"])
+                logger.info(f"删除文档切片: {doc_id}, 数量: {len(results['ids'])}")
             return True
         except Exception as e:
             logger.error(f"删除切片失败: {e}")
@@ -314,21 +238,20 @@ class VectorStore:
             return {"total_chunks": 0, "total_docs": 0}
         
         try:
-            self.collection.flush()
-            stats = self.collection.num_entities
+            count = self.collection.count()
             
-            results = self.collection.query(
-                expr="chunk_id != ''",
-                output_fields=["doc_id"]
+            results = self.collection.get(
+                include=["metadatas"]
             )
             
             doc_ids = set()
-            for result in results:
-                if result.get("doc_id"):
-                    doc_ids.add(result.get("doc_id"))
+            if results and results.get("metadatas"):
+                for metadata in results["metadatas"]:
+                    if metadata.get("doc_id"):
+                        doc_ids.add(metadata.get("doc_id"))
             
             return {
-                "total_chunks": stats,
+                "total_chunks": count,
                 "total_docs": len(doc_ids),
                 "doc_ids": list(doc_ids)
             }
@@ -346,9 +269,11 @@ class VectorStore:
             return False
         
         try:
-            utility.drop_collection(self.collection_name)
-            self.collection = self._create_collection()
-            self.collection.load()
+            self.client.delete_collection(self.collection_name)
+            self.collection = self.client.create_collection(
+                name=self.collection_name,
+                metadata={"hnsw:space": "cosine"}
+            )
             logger.info(f"集合已重置: {self.collection_name}")
             return True
         except Exception as e:
@@ -360,16 +285,14 @@ _vectorstore_instance: Optional[VectorStore] = None
 
 
 def get_vectorstore(
-    host: str = "localhost",
-    port: int = 19530,
+    persist_dir: str = "./data/vectordb/chroma",
     collection_name: str = "engineering_qa",
     embedding_dim: int = 1536
 ) -> VectorStore:
     """
     获取VectorStore单例
     
-    :param host: Milvus服务地址
-    :param port: Milvus服务端口
+    :param persist_dir: ChromaDB数据持久化目录
     :param collection_name: 集合名称
     :param embedding_dim: 向量维度
     :return: VectorStore实例
@@ -377,7 +300,7 @@ def get_vectorstore(
     global _vectorstore_instance
     
     if _vectorstore_instance is None:
-        _vectorstore_instance = VectorStore(host, port, collection_name, embedding_dim)
+        _vectorstore_instance = VectorStore(persist_dir, collection_name, embedding_dim)
         _vectorstore_instance.initialize()
     
     return _vectorstore_instance

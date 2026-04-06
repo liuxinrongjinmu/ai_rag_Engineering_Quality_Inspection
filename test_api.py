@@ -22,7 +22,7 @@ def test_query(question: str, use_web_search: bool = True, top_k: int = 5):
     
     try:
         response = httpx.post(
-            'http://localhost:5001/api/v1/query',
+            'http://localhost:5002/api/v1/query',
             json={
                 'question': question,
                 'options': {
@@ -87,7 +87,7 @@ def test_health():
     print("="*60)
     
     try:
-        response = httpx.get('http://localhost:5001/api/v1/health', timeout=10.0)
+        response = httpx.get('http://localhost:5002/api/v1/health', timeout=10.0)
         
         if response.status_code == 200:
             data = response.json()

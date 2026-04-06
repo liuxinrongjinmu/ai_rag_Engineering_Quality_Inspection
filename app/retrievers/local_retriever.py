@@ -1,6 +1,6 @@
 """
 本地检索器
-从Milvus向量数据库检索相关内容
+从ChromaDB向量数据库检索相关内容
 """
 from typing import List, Dict, Any, Optional
 from loguru import logger
@@ -44,9 +44,8 @@ class LocalRetriever:
         
         if self.vectorstore is None:
             self.vectorstore = get_vectorstore(
-                host=settings.MILVUS_HOST,
-                port=settings.MILVUS_PORT,
-                collection_name=settings.MILVUS_COLLECTION_NAME,
+                persist_dir=settings.CHROMA_PERSIST_DIR,
+                collection_name=settings.CHROMA_COLLECTION_NAME,
                 embedding_dim=settings.EMBEDDING_DIM
             )
         

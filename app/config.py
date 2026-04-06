@@ -18,20 +18,15 @@ class Settings(BaseSettings):
     
     TAVILY_API_KEY: str = Field(..., description="Tavily搜索API Key")
     
-    # Milvus配置
-    MILVUS_HOST: str = Field(
-        default="localhost",
-        description="Milvus服务地址"
+    # ChromaDB配置
+    CHROMA_PERSIST_DIR: str = Field(
+        default="./data/vectordb/chroma",
+        description="ChromaDB数据持久化目录"
     )
     
-    MILVUS_PORT: int = Field(
-        default=19530,
-        description="Milvus服务端口"
-    )
-    
-    MILVUS_COLLECTION_NAME: str = Field(
+    CHROMA_COLLECTION_NAME: str = Field(
         default="engineering_qa",
-        description="Milvus集合名称"
+        description="ChromaDB集合名称"
     )
     
     # 向量维度（DashScope text-embedding-v2 输出1536维）
@@ -51,7 +46,7 @@ class Settings(BaseSettings):
     TOP_K_RESULTS: int = Field(default=5, description="检索返回结果数")
     
     API_HOST: str = Field(default="0.0.0.0", description="API服务主机")
-    API_PORT: int = Field(default=8000, description="API服务端口")
+    API_PORT: int = Field(default=5002, description="API服务端口")
     DEBUG: bool = Field(default=True, description="调试模式")
     
     class Config:

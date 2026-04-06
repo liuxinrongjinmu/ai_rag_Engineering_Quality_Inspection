@@ -9,7 +9,7 @@ tenacity==8.2.3
 loguru==0.7.2
 
 # 向量数据库
-pymilvus==2.3.3
+chromadb==0.4.22
 
 # LLM
 dashscope==1.17.0

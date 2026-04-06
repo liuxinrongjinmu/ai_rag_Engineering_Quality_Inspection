@@ -1,6 +1,6 @@
 """
 数据入库脚本
-解析Markdown和Excel文件，使用固定大小分块后存入Milvus向量数据库
+解析Markdown和Excel文件，使用固定大小分块后存入ChromaDB向量数据库
 同时初始化BM25索引
 """
 import sys
@@ -25,7 +25,7 @@ from app.utils.logger import setup_logger
 class DataIngestor:
     """
     数据入库管道
-    使用固定大小分块，存储到Milvus
+    使用固定大小分块，存储到ChromaDB
     """
     
     def __init__(self):
@@ -39,9 +39,8 @@ class DataIngestor:
         )
         self.embedder = get_embedder()
         self.vectorstore = VectorStore(
-            host=self.settings.MILVUS_HOST,
-            port=self.settings.MILVUS_PORT,
-            collection_name=self.settings.MILVUS_COLLECTION_NAME,
+            persist_dir=self.settings.CHROMA_PERSIST_DIR,
+            collection_name=self.settings.CHROMA_COLLECTION_NAME,
             embedding_dim=self.settings.EMBEDDING_DIM
         )
         self.bm25_retriever = get_bm25_retriever()
@@ -65,7 +64,7 @@ class DataIngestor:
             return False
         
         if not self.vectorstore.initialize():
-            logger.error("Milvus向量数据库初始化失败")
+            logger.error("ChromaDB向量数据库初始化失败")
             return False
         
         logger.info("入库管道初始化成功")
@@ -194,7 +193,7 @@ class DataIngestor:
         logger.info(f"开始向量化 {len(all_chunks)} 个切片...")
         chunks_with_embeddings = self.embedder.embed_chunks(all_chunks)
         
-        logger.info("开始写入Milvus向量数据库...")
+        logger.info("开始写入ChromaDB向量数据库...")
         added_count = self.vectorstore.add_chunks(chunks_with_embeddings)
         
         # 初始化BM25索引
