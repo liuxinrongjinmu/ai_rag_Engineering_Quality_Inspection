@@ -19,8 +19,8 @@ setup_logger(debug=settings.DEBUG)
 
 app = FastAPI(
     title="工程质检RAG系统",
-    description="公路工程质量检测智能问答系统API",
-    version="1.0.0",
+    description="公路工程质量检测智能问答系统API（基于LangChain）",
+    version="2.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -44,15 +44,25 @@ async def startup_event():
     应用启动事件
     """
     logger.info("工程质检RAG系统启动中...")
-    
+
     try:
-        from app.retrievers.vector_store import get_vectorstore
+        from app.infrastructure.vectorstore import get_vectorstore
         vectorstore = get_vectorstore()
-        stats = vectorstore.get_stats()
-        logger.info(f"向量数据库状态: {stats['total_chunks']}个切片, {stats['total_docs']}个文档")
+        collection = vectorstore._collection
+        count = collection.count()
+        logger.info(f"向量数据库状态: {count}个切片")
     except Exception as e:
         logger.warning(f"向量数据库初始化警告: {e}")
-    
+
+    try:
+        from app.retrievers.bm25_retriever import load_bm25_retriever
+        from pathlib import Path
+        bm25_path = Path(settings.BM25_INDEX_PATH)
+        if bm25_path.exists():
+            load_bm25_retriever(str(bm25_path))
+    except Exception as e:
+        logger.warning(f"BM25索引加载警告: {e}")
+
     logger.info("工程质检RAG系统启动完成")
 
 
@@ -71,7 +81,8 @@ async def root():
     """
     return {
         "name": "工程质检RAG系统",
-        "version": "1.0.0",
+        "version": "2.0.0",
+        "framework": "LangChain",
         "docs": "/docs",
         "health": "/api/v1/health"
     }
@@ -79,7 +90,7 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     uvicorn.run(
         "app.main:app",
         host=settings.API_HOST,

@@ -1,140 +1,78 @@
 """
 网络检索器
-使用Tavily API进行网络搜索
+基于TavilySearchResults的网络搜索
 """
-from typing import List, Dict, Any, Optional
+from typing import List, Optional
 from loguru import logger
-import httpx
 
-from app.models.document import WebSearchResult
+from langchain_core.documents import Document
 
 
-class WebRetriever:
+_web_retriever_instance: Optional[object] = None
+
+
+def get_web_retriever(max_results: int = 5) -> object:
     """
-    网络检索器
-    使用Tavily API
-    """
-    
-    TAVILY_API_URL = "https://api.tavily.com/search"
-    
-    AUTHORITY_DOMAINS = [
-        "mot.gov.cn",
-        "mohurd.gov.cn",
-        "std.samr.gov.cn",
-        "openstd.samr.gov.cn",
-        "cnki.net",
-        "wanfangdata.com.cn"
-    ]
-    
-    def __init__(
-        self,
-        api_key: str,
-        max_results: int = 5,
-        timeout: int = 30
-    ):
-        """
-        初始化网络检索器
-        
-        :param api_key: Tavily API Key
-        :param max_results: 最大结果数
-        :param timeout: 超时时间
-        """
-        self.api_key = api_key
-        self.max_results = max_results
-        self.timeout = timeout
-    
-    def search_sync(
-        self,
-        query: str,
-        include_domains: Optional[List[str]] = None,
-        exclude_domains: Optional[List[str]] = None
-    ) -> List[WebSearchResult]:
-        """
-        同步网络搜索
-        
-        :param query: 查询文本
-        :param include_domains: 包含的域名
-        :param exclude_domains: 排除的域名
-        :return: 搜索结果列表
-        """
-        if not self.api_key:
-            logger.warning("Tavily API Key未配置")
-            return []
-        
-        payload = {
-            "api_key": self.api_key,
-            "query": query,
-            "search_depth": "advanced",
-            "max_results": self.max_results,
-            "include_answer": True,
-            "include_raw_content": False
-        }
-        
-        if include_domains:
-            payload["include_domains"] = include_domains
-        else:
-            payload["include_domains"] = self.AUTHORITY_DOMAINS
-        
-        if exclude_domains:
-            payload["exclude_domains"] = exclude_domains
-        
-        try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(
-                    self.TAVILY_API_URL,
-                    json=payload
-                )
-                response.raise_for_status()
-                data = response.json()
-            
-            results = []
-            
-            if "results" in data:
-                for item in data["results"]:
-                    results.append(WebSearchResult(
-                        title=item.get("title", ""),
-                        content=item.get("content", ""),
-                        url=item.get("url", ""),
-                        score=item.get("score")
-                    ))
-            
-            logger.info(f"网络检索完成: 查询='{query[:30]}...', 结果数={len(results)}")
-            return results
-            
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Tavily API请求失败: {e}")
-            return []
-        except Exception as e:
-            logger.error(f"网络检索失败: {e}")
-            return []
-    
-    def is_authority_source(self, url: str) -> bool:
-        """
-        检查是否为权威来源
-        
-        :param url: URL
-        :return: 是否权威
-        """
-        for domain in self.AUTHORITY_DOMAINS:
-            if domain in url:
-                return True
-        return False
+    获取Tavily网络检索器单例
 
-
-_web_retriever_instance: Optional[WebRetriever] = None
-
-
-def get_web_retriever(api_key: str, max_results: int = 5) -> WebRetriever:
-    """
-    获取WebRetriever单例
-    
-    :param api_key: Tavily API Key
     :param max_results: 最大结果数
-    :return: WebRetriever实例
+    :return: TavilySearchResults实例
     """
     global _web_retriever_instance
-    
+
     if _web_retriever_instance is None:
-        _web_retriever_instance = WebRetriever(api_key, max_results)
-    
+        from langchain_community.tools import TavilySearchResults
+        from app.config import get_settings
+
+        settings = get_settings()
+        _web_retriever_instance = TavilySearchResults(
+            max_results=max_results,
+            tavily_api_key=settings.TAVILY_API_KEY,
+        )
+        logger.info(f"Tavily网络检索器初始化成功: max_results={max_results}")
+
     return _web_retriever_instance
+
+
+def search_web(query: str, max_results: int = 5) -> List[Document]:
+    """
+    执行网络搜索
+
+    :param query: 查询文本
+    :param max_results: 最大结果数
+    :return: Document列表
+    """
+    try:
+        retriever = get_web_retriever(max_results)
+        results = retriever.invoke(query)
+
+        documents = []
+        for result in results:
+            if isinstance(result, dict):
+                title = result.get("title", "")
+                content = result.get("content", "")
+                url = result.get("url", "")
+            else:
+                title = ""
+                content = str(result)
+                url = ""
+
+            if not content.strip():
+                continue
+
+            doc = Document(
+                page_content=content,
+                metadata={
+                    "source_type": "web",
+                    "doc_name": title,
+                    "url": url,
+                },
+            )
+            documents.append(doc)
+
+        logger.info(f"网络检索完成: 查询='{query[:30]}...', 结果数={len(documents)}")
+        return documents
+
+    except Exception as e:
+        logger.error(f"网络检索失败: {e}")
+        return []

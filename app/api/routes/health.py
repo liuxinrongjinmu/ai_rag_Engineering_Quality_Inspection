@@ -5,7 +5,6 @@ from fastapi import APIRouter
 from loguru import logger
 
 from app.models.response import HealthResponse
-from app.retrievers.vector_store import get_vectorstore
 
 router = APIRouter(prefix="/health", tags=["健康检查"])
 
@@ -19,7 +18,7 @@ router = APIRouter(prefix="/health", tags=["健康检查"])
 async def health_check():
     """
     健康检查接口
-    
+
     返回系统各组件的健康状态和统计信息
     """
     components = {
@@ -27,34 +26,44 @@ async def health_check():
         "llm": "unknown",
         "embedder": "unknown"
     }
-    
+
     stats = {
         "total_chunks": 0,
         "total_docs": 0
     }
-    
+
     try:
+        from app.infrastructure.vectorstore import get_vectorstore
         vectorstore = get_vectorstore()
-        if vectorstore.is_initialized():
-            components["vectordb"] = "ok"
-            stats = vectorstore.get_stats()
-        else:
-            components["vectordb"] = "error"
+        collection = vectorstore._collection
+        count = collection.count()
+
+        metadatas = collection.get(include=["metadatas"])["metadatas"]
+        doc_ids = set()
+        for m in (metadatas or []):
+            if m.get("doc_id"):
+                doc_ids.add(m["doc_id"])
+
+        components["vectordb"] = "ok"
+        stats = {
+            "total_chunks": count,
+            "total_docs": len(doc_ids),
+        }
     except Exception as e:
         logger.warning(f"向量数据库检查失败: {e}")
         components["vectordb"] = "error"
-    
+
     try:
-        from app.processors.embedder import get_embedder
-        embedder = get_embedder()
-        if embedder.is_initialized():
+        from app.infrastructure.embeddings import get_embeddings
+        embeddings = get_embeddings()
+        if embeddings:
             components["embedder"] = "ok"
         else:
             components["embedder"] = "error"
     except Exception as e:
         logger.warning(f"Embedder检查失败: {e}")
         components["embedder"] = "error"
-    
+
     try:
         from app.config import get_settings
         settings = get_settings()
@@ -65,10 +74,10 @@ async def health_check():
     except Exception as e:
         logger.warning(f"LLM检查失败: {e}")
         components["llm"] = "error"
-    
+
     all_ok = all(v == "ok" for v in components.values())
     overall_status = "healthy" if all_ok else "degraded"
-    
+
     return HealthResponse(
         status=overall_status,
         components=components,

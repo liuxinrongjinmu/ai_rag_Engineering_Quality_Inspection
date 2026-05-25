@@ -27,28 +27,28 @@ router = APIRouter(prefix="/source", tags=["来源追溯"])
 async def get_source(chunk_id: str):
     """
     来源追溯接口
-    
+
     - **chunk_id**: 切片唯一标识
     """
     try:
         orchestrator = get_orchestrator()
-        
+
         detail = orchestrator.get_source_detail(chunk_id)
-        
+
         if not detail:
             raise HTTPException(
                 status_code=404,
                 detail=f"切片不存在: {chunk_id}"
             )
-        
+
         source_detail = SourceDetail(**detail)
-        
+
         return SourceResponse(
             code=0,
             message="success",
             data=source_detail
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
