@@ -1,6 +1,6 @@
 # 工程质检RAG系统（ChromaDB版本）
 
-> 公路工程质量检测智能问答系统 - 使用ChromaDB向量数据库
+> 公路工程质量检测智能问答系统 - 使用LangChain框架 + ChromaDB向量数据库
 
 ## 项目概述
 
@@ -8,6 +8,7 @@
 
 ### 核心特性
 
+- **LangChain框架**：基于LangChain 0.3.x重构，使用LCEL链式调用语法
 - **混合检索**：向量检索 + BM25关键词检索 + 网络检索
 - **并行执行**：向量检索和BM25同时执行，提升响应速度
 - **智能缓存**：内存缓存热门查询，命中时<100ms响应
@@ -17,10 +18,10 @@
 
 ### 版本说明
 
-| 分支 | 向量数据库 | 端口 | 适用场景 |
-|------|-----------|------|---------|
-| `main` | Milvus | 5001 | 生产环境、大规模数据 |
-| `chromadb` | ChromaDB | 5002 | 开发测试、中小规模数据 |
+| 分支 | 向量数据库 | 框架 | 端口 | 适用场景 |
+|------|-----------|------|------|---------|
+| `main` | Milvus | 自研 | 5001 | 生产环境、大规模数据 |
+| `chromadb` | ChromaDB | LangChain | 5002 | 开发测试、中小规模数据 |
 
 ---
 
@@ -54,16 +55,15 @@ graph TB
     
     subgraph 核心服务层
         ORCH[查询编排器]
-        RAG[RAG引擎]
-        HYBRID[混合检索器]
+        CHAIN[RAG Chain]
+        ENSEMBLE[EnsembleRetriever]
         CACHE[查询缓存]
     end
     
     subgraph 检索层
-        LOCAL[本地检索器]
+        CHROMA[Chroma检索器]
         BM25[BM25检索器]
         WEB[网络检索器]
-        RERANK[重排序器]
     end
     
     subgraph 数据层
@@ -80,19 +80,15 @@ graph TB
     U --> API
     API --> ORCH
     ORCH --> CACHE
-    CACHE --> RAG
-    RAG --> HYBRID
-    HYBRID --> LOCAL
-    HYBRID --> BM25
-    HYBRID --> WEB
-    LOCAL --> VDB
+    CACHE --> CHAIN
+    CHAIN --> ENSEMBLE
+    ENSEMBLE --> CHROMA
+    ENSEMBLE --> BM25
+    ENSEMBLE --> WEB
+    CHROMA --> VDB
     BM25 --> BM25_IDX
     WEB --> SEARCH
-    LOCAL --> RERANK
-    BM25 --> RERANK
-    WEB --> RERANK
-    RERANK --> RAG
-    RAG --> LLM
+    CHAIN --> LLM
     LLM --> API
 ```
 
@@ -103,6 +99,7 @@ graph TB
 | 组件 | 技术选择 | 选型原因 |
 |------|---------|---------|
 | 后端框架 | FastAPI | 异步支持、自动文档、类型提示 |
+| LLM框架 | LangChain 0.3.x | 标准化组件、LCEL语法、生态成熟 |
 | 向量数据库 | ChromaDB | 轻量级、易部署、本地存储 |
 | Embedding | DashScope API | 阿里云服务、中文支持好 |
 | LLM | Qwen (通义千问) | 中文理解能力强、性价比高 |
@@ -114,21 +111,25 @@ graph TB
 ## 核心功能模块
 
 ### 1. 数据处理模块
-- **Markdown解析器**：解析用户转换的Markdown文档
-- **Excel解析器**：处理表格数据，转换为描述性文本
-- **切片器**：文本分块，支持段落切分和固定大小切分
+- **文档加载器**：支持Markdown、Excel等格式解析
+- **文本切片器**：智能文本分块，支持段落切分和固定大小切分
 
 ### 2. 检索模块
-- **向量检索**：使用ChromaDB进行语义相似度检索
-- **BM25检索**：关键词匹配检索，补充向量检索不足
-- **网络检索**：Tavily API搜索权威来源
-- **重排序器**：本地优先策略，结果融合排序
+- **Chroma检索器**：使用ChromaDB进行语义相似度检索
+- **BM25检索器**：关键词匹配检索，补充向量检索不足
+- **EnsembleRetriever**：融合向量检索和BM25结果
+- **网络检索器**：Tavily API搜索权威来源
 
 ### 3. 生成模块
-- **RAG引擎**：检索增强生成核心逻辑
+- **RAG Chain**：基于LCEL的检索增强生成核心逻辑
 - **流式生成**：SSE实时返回答案
 
-### 4. 优化模块
+### 4. 基础设施模块
+- **LLM工厂**：通义千问单例管理
+- **Embedding工厂**：DashScope Embedding单例管理
+- **向量存储**：ChromaDB集合管理
+
+### 5. 优化模块
 - **智能缓存**：内存缓存热门查询
 - **并行检索**：向量检索和BM25同时执行
 
@@ -138,24 +139,25 @@ graph TB
 
 ```mermaid
 flowchart LR
-    A[原始文档] --> B[解析处理]
+    A[原始文档] --> B[文档加载]
     B --> C[文本切片]
     C --> D[向量化]
     D --> E[入库ChromaDB]
     
-    F[用户问题] --> G[查询重写]
-    G --> H[并行检索]
-    H --> I[向量检索]
-    H --> J[BM25检索]
-    I --> K[结果融合]
-    J --> K
-    K --> L{结果足够?}
-    L -->|否| M[网络检索]
-    M --> N[重排序]
-    L -->|是| N
+    F[用户问题] --> G[缓存查询]
+    G -->|命中| H[返回缓存]
+    G -->|未命中| I[混合检索]
+    I --> J[Chroma检索]
+    I --> K[BM25检索]
+    J --> L[结果融合]
+    K --> L
+    L --> M{结果足够?}
+    M -->|否| N[网络检索]
     N --> O[构建上下文]
+    M -->|是| O
     O --> P[LLM生成]
-    P --> Q[返回答案]
+    P --> Q[缓存结果]
+    Q --> R[返回答案]
 ```
 
 ---
@@ -219,7 +221,8 @@ Content-Type: application/json
         "answer": "根据JTG F80-1-2017《公路工程质量检验评定标准》...",
         "sources": [...],
         "query_time_ms": 1234,
-        "used_web_search": false
+        "used_web_search": false,
+        "cache_hit": false
     }
 }
 ```
@@ -242,7 +245,7 @@ event: message
 data: {"type": "answer", "content": "根据JTG F80-1-2017..."}
 
 event: done
-data: {"sources": [...], "query_time_ms": 1234}
+data: {"sources": [...], "query_time_ms": 1234, "cache_hit": false}
 ```
 
 ### 3. 来源追溯接口
@@ -265,9 +268,11 @@ GET /api/v1/health
 工程质检RAG系统/
 ├── app/
 │   ├── api/routes/          # API路由
+│   ├── chains/              # LangChain Chains
 │   ├── core/                # 核心服务
 │   ├── retrievers/          # 检索模块
 │   ├── processors/          # 数据处理
+│   ├── infrastructure/      # 基础设施（LLM、Embedding、向量存储）
 │   ├── models/              # 数据模型
 │   ├── utils/               # 工具函数
 │   ├── config.py            # 配置管理
@@ -295,7 +300,7 @@ GET /api/v1/health
 
 | 配置项 | 说明 | 获取方式 |
 |--------|------|---------|
-| `DASHSCOPE_API_KEY` | 通义千问API Key | https://dashscope.console.aliyun.com/ |
+| `DASHSCOPE_API_KEY` | 通义千问API Key（用于LLM和Embedding） | https://dashscope.console.aliyun.com/ |
 | `TAVILY_API_KEY` | Tavily搜索API Key | https://tavily.com/ |
 
 ### ChromaDB配置
@@ -304,6 +309,13 @@ GET /api/v1/health
 |--------|--------|------|
 | `CHROMA_PERSIST_DIR` | `./data/vectordb/chroma` | 数据持久化目录 |
 | `CHROMA_COLLECTION_NAME` | `engineering_qa` | 集合名称 |
+
+### LLM配置
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `LLM_MODEL` | `qwen-turbo` | LLM模型名称 |
+| `EMBEDDING_MODEL` | `text-embedding-v2` | Embedding模型名称 |
 
 ---
 
@@ -317,6 +329,7 @@ class QueryData(BaseModel):
     sources: List[SourceInfo]      # 来源信息列表
     query_time_ms: int             # 查询耗时(毫秒)
     used_web_search: bool          # 是否使用了网络检索
+    cache_hit: bool                # 是否命中缓存
 
 class SourceInfo(BaseModel):
     chunk_id: str                  # 切片ID
@@ -333,10 +346,12 @@ class SourceInfo(BaseModel):
 
 | 参数 | 位置 | 默认值 | 作用 |
 |------|------|--------|------|
-| `SYSTEM_PROMPT` | rag_engine.py 第20-37行 | - | LLM角色设定、回答原则 |
-| `max_context_length` | rag_engine.py 第69行 | 6000 | 上下文最大字符数 |
-| `max_tokens` | rag_engine.py 第166行 | 1000 | 生成答案最大token数 |
-| `temperature` | rag_engine.py 第167行 | 0.1 | 生成温度 |
+| `SYSTEM_PROMPT` | app/chains/prompts.py | - | LLM角色设定、回答原则 |
+| `max_context_length` | app/chains/rag_chain.py | 6000 | 上下文最大字符数 |
+| `max_tokens` | app/infrastructure/llm.py | 1000 | 生成答案最大token数 |
+| `temperature` | app/infrastructure/llm.py | 0.1 | 生成温度 |
+| `vector_weight` | app/retrievers/ensemble_retriever.py | 0.6 | 向量检索权重 |
+| `bm25_weight` | app/retrievers/ensemble_retriever.py | 0.4 | BM25检索权重 |
 
 ---
 
@@ -349,10 +364,12 @@ class SourceInfo(BaseModel):
 | 缓存命中延迟 | < 100ms | ✅ |
 | 答案来源可追溯 | 100% | ✅ |
 | 网络检索补充 | 支持 | ✅ |
+| LangChain集成 | 完成 | ✅ |
 
 ---
 
-**项目版本**：v1.1.0-chromadb  
+**项目版本**：v2.0.0-chromadb  
 **分支**：chromadb  
+**框架**：LangChain 0.3.x  
 **向量数据库**：ChromaDB  
 **服务端口**：5002
