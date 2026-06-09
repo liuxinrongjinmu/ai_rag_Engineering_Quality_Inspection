@@ -96,31 +96,36 @@ async def query_stream(request: QueryRequest):
 
             if cached_result:
                 yield f"event: message\ndata: {json.dumps({'type': 'answer', 'content': cached_result['answer']}, ensure_ascii=False)}\n\n"
-                yield f"event: done\ndata: {json.dumps({'sources': cached_result['sources'], 'query_time_ms': int((time.time() - start_time) * 1000), 'cached': True}, ensure_ascii=False)}\n\n"
+                yield f"event: done\ndata: {json.dumps({'sources': cached_result.get('sources', []), 'query_time_ms': int((time.time() - start_time) * 1000), 'cached': True}, ensure_ascii=False)}\n\n"
                 return
 
-            full_answer = ""
-            for chunk in orchestrator.process_query_stream(
+            # 获取流式生成器、来源信息和网络检索标记
+            stream_gen, sources, used_web_search = orchestrator.process_query_stream(
                 question=request.question,
                 use_web_search=use_web_search,
                 top_k=top_k,
-            ):
+            )
+
+            full_answer = ""
+            for chunk in stream_gen:
                 full_answer += chunk
                 yield f"event: message\ndata: {json.dumps({'type': 'answer', 'content': chunk}, ensure_ascii=False)}\n\n"
 
             query_time_ms = int((time.time() - start_time) * 1000)
 
+            # 缓存完整结果（包含sources）
+            sources_data = [s.model_dump() for s in sources]
             cache.set(
                 question=request.question,
                 data={
                     'answer': full_answer,
-                    'sources': [],
-                    'used_web_search': use_web_search,
+                    'sources': sources_data,
+                    'used_web_search': used_web_search,
                 },
                 use_web_search=use_web_search,
             )
 
-            yield f"event: done\ndata: {json.dumps({'sources': [], 'query_time_ms': query_time_ms, 'used_web_search': use_web_search}, ensure_ascii=False)}\n\n"
+            yield f"event: done\ndata: {json.dumps({'sources': sources_data, 'query_time_ms': query_time_ms, 'used_web_search': used_web_search}, ensure_ascii=False)}\n\n"
 
         except Exception as e:
             logger.error(f"流式查询失败: {e}")

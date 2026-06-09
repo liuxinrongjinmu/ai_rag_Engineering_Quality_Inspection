@@ -27,7 +27,7 @@ def get_ensemble_retriever(
     global _ensemble_retriever_instance
 
     if _ensemble_retriever_instance is None:
-        from langchain_classic.retrievers import EnsembleRetriever
+        from langchain.retrievers import EnsembleRetriever
         from app.retrievers.chroma_retriever import get_chroma_retriever
         from app.retrievers.bm25_retriever import get_bm25_retriever
 

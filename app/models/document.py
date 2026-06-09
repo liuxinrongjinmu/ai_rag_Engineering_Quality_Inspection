@@ -21,6 +21,7 @@ class DocumentType(str, Enum):
     文档类型
     """
     PDF = "pdf"
+    MARKDOWN = "markdown"
     EXCEL = "excel"
 
 

@@ -4,7 +4,7 @@
 """
 from pydantic_settings import BaseSettings
 from pydantic import Field
-from typing import Optional
+from typing import Optional, List
 from functools import lru_cache
 
 
@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     API_HOST: str = Field(default="0.0.0.0", description="API服务主机")
     API_PORT: int = Field(default=5002, description="API服务端口")
     DEBUG: bool = Field(default=True, description="调试模式")
+
+    # CORS配置
+    CORS_ORIGINS: List[str] = Field(
+        default=["*"],
+        description="允许的跨域来源列表，生产环境应设置为具体域名"
+    )
 
     class Config:
         env_file = ".env"

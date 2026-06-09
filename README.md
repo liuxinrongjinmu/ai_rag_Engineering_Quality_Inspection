@@ -1,4 +1,4 @@
-# 工程质检RAG系统（ChromaDB版本）
+# 工程质检RAG系统
 
 > 公路工程质量检测智能问答系统 - 使用LangChain框架 + ChromaDB向量数据库
 
@@ -10,18 +10,13 @@
 
 - **LangChain框架**：基于LangChain 0.3.x重构，使用LCEL链式调用语法
 - **混合检索**：向量检索 + BM25关键词检索 + 网络检索
-- **并行执行**：向量检索和BM25同时执行，提升响应速度
+- **语义重排序**：DashScope gte-rerank模型语义重排序，不可用时自动回退到本地优先策略
+- **LLM查询重写**：规则重写 + LLM智能重写，将口语化查询转为规范术语
 - **智能缓存**：内存缓存热门查询，命中时<100ms响应
-- **流式输出**：SSE流式返回答案，提升用户体验
-- **来源追溯**：每个答案可追溯到具体文档和章节
+- **流式输出**：SSE流式返回答案（含完整来源信息），提升用户体验
+- **来源追溯**：每个答案可追溯到具体文档和章节，支持查看前后文上下文
 - **本地优先**：优先使用本地知识库，网络检索作为补充
-
-### 版本说明
-
-| 分支 | 向量数据库 | 框架 | 端口 | 适用场景 |
-|------|-----------|------|------|---------|
-| `main` | Milvus | 自研 | 5001 | 生产环境、大规模数据 |
-| `chromadb` | ChromaDB | LangChain | 5002 | 开发测试、中小规模数据 |
+- **配置化CORS**：跨域来源支持环境变量配置，生产环境可限制具体域名
 
 ---
 
@@ -58,6 +53,8 @@ graph TB
         CHAIN[RAG Chain]
         ENSEMBLE[EnsembleRetriever]
         CACHE[查询缓存]
+        REWRITER[查询重写器]
+        RERANKER[语义重排序器]
     end
     
     subgraph 检索层
@@ -74,20 +71,24 @@ graph TB
     subgraph 外部服务
         LLM[通义千问]
         EMBED[DashScope Embedding]
+        RERANK[DashScope Rerank]
         SEARCH[Tavily搜索]
     end
     
     U --> API
     API --> ORCH
     ORCH --> CACHE
-    CACHE --> CHAIN
-    CHAIN --> ENSEMBLE
+    ORCH --> REWRITER
+    ORCH --> ENSEMBLE
     ENSEMBLE --> CHROMA
     ENSEMBLE --> BM25
-    ENSEMBLE --> WEB
+    ORCH --> WEB
+    ORCH --> RERANKER
+    RERANKER --> RERANK
     CHROMA --> VDB
     BM25 --> BM25_IDX
     WEB --> SEARCH
+    ORCH --> CHAIN
     CHAIN --> LLM
     LLM --> API
 ```
@@ -103,6 +104,7 @@ graph TB
 | 向量数据库 | ChromaDB | 轻量级、易部署、本地存储 |
 | Embedding | DashScope API | 阿里云服务、中文支持好 |
 | LLM | Qwen (通义千问) | 中文理解能力强、性价比高 |
+| 语义重排序 | DashScope gte-rerank | 语义相关性排序，提升检索精度 |
 | 关键词检索 | rank_bm25 + jieba | 经典算法、中文分词支持 |
 | 网络检索 | Tavily API | 专业搜索API、结果质量高 |
 
@@ -112,26 +114,28 @@ graph TB
 
 ### 1. 数据处理模块
 - **文档加载器**：支持Markdown、Excel等格式解析
-- **文本切片器**：智能文本分块，支持段落切分和固定大小切分
+- **文本切片器**：智能文本分块，支持段落切分和固定大小切分，保留表格完整性
 
 ### 2. 检索模块
 - **Chroma检索器**：使用ChromaDB进行语义相似度检索
 - **BM25检索器**：关键词匹配检索，补充向量检索不足
-- **EnsembleRetriever**：融合向量检索和BM25结果
+- **EnsembleRetriever**：融合向量检索和BM25结果（RRF算法）
 - **网络检索器**：Tavily API搜索权威来源
+- **语义重排序器**：DashScope gte-rerank模型重排序，不可用时回退到本地优先策略
 
 ### 3. 生成模块
 - **RAG Chain**：基于LCEL的检索增强生成核心逻辑
-- **流式生成**：SSE实时返回答案
+- **流式生成**：SSE实时返回答案（含完整来源信息）
 
-### 4. 基础设施模块
+### 4. 查询优化模块
+- **查询重写器**：规则重写（术语映射+句式规范化）+ LLM智能重写
+- **智能缓存**：内存缓存热门查询，TTL 1小时
+- **来源上下文**：支持查看切片前后文，定位到同一文档的相邻切片
+
+### 5. 基础设施模块
 - **LLM工厂**：通义千问单例管理
 - **Embedding工厂**：DashScope Embedding单例管理
 - **向量存储**：ChromaDB集合管理
-
-### 5. 优化模块
-- **智能缓存**：内存缓存热门查询
-- **并行检索**：向量检索和BM25同时执行
 
 ---
 
@@ -146,18 +150,19 @@ flowchart LR
     
     F[用户问题] --> G[缓存查询]
     G -->|命中| H[返回缓存]
-    G -->|未命中| I[混合检索]
+    G -->|未命中| G2[查询重写]
+    G2 --> I[混合检索]
     I --> J[Chroma检索]
     I --> K[BM25检索]
     J --> L[结果融合]
     K --> L
     L --> M{结果足够?}
     M -->|否| N[网络检索]
-    N --> O[构建上下文]
+    N --> O[语义重排序]
     M -->|是| O
     O --> P[LLM生成]
     P --> Q[缓存结果]
-    Q --> R[返回答案]
+    Q --> R[返回答案+来源]
 ```
 
 ---
@@ -193,6 +198,12 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 5002
 
 访问 http://localhost:5002/docs 查看API文档
 
+### 5. Docker部署
+
+```bash
+docker-compose up -d
+```
+
 ---
 
 ## API接口
@@ -221,8 +232,7 @@ Content-Type: application/json
         "answer": "根据JTG F80-1-2017《公路工程质量检验评定标准》...",
         "sources": [...],
         "query_time_ms": 1234,
-        "used_web_search": false,
-        "cache_hit": false
+        "used_web_search": false
     }
 }
 ```
@@ -245,13 +255,28 @@ event: message
 data: {"type": "answer", "content": "根据JTG F80-1-2017..."}
 
 event: done
-data: {"sources": [...], "query_time_ms": 1234, "cache_hit": false}
+data: {"sources": [...], "query_time_ms": 1234, "used_web_search": false}
 ```
 
 ### 3. 来源追溯接口
 
 ```bash
 GET /api/v1/source/{chunk_id}
+```
+
+**响应**：
+```json
+{
+    "code": 0,
+    "data": {
+        "chunk_id": "abc123",
+        "doc_id": "def456",
+        "doc_name": "JTG F80-1-2017 公路工程质量检验评定标准",
+        "full_content": "完整原文内容...",
+        "context_before": "前一个切片内容...",
+        "context_after": "后一个切片内容..."
+    }
+}
 ```
 
 ### 4. 健康检查接口
@@ -268,13 +293,27 @@ GET /api/v1/health
 工程质检RAG系统/
 ├── app/
 │   ├── api/routes/          # API路由
+│   │   ├── query.py         # 问答接口（含流式）
+│   │   ├── source.py        # 来源追溯接口
+│   │   └── health.py        # 健康检查接口
 │   ├── chains/              # LangChain Chains
+│   │   ├── rag_chain.py     # RAG Chain（LCEL）
+│   │   └── prompts.py       # Prompt模板
 │   ├── core/                # 核心服务
+│   │   └── orchestrator.py  # 查询编排器（含缓存、上下文）
 │   ├── retrievers/          # 检索模块
+│   │   ├── chroma_retriever.py   # Chroma向量检索
+│   │   ├── bm25_retriever.py     # BM25关键词检索
+│   │   ├── ensemble_retriever.py # 混合检索融合
+│   │   ├── reranker.py           # 语义重排序器
+│   │   └── web_retriever.py      # 网络检索器
 │   ├── processors/          # 数据处理
+│   │   ├── document_loaders.py   # 文档加载（MD/Excel）
+│   │   ├── chunker.py            # 文本切片器
+│   │   └── query_rewriter.py     # 查询重写器
 │   ├── infrastructure/      # 基础设施（LLM、Embedding、向量存储）
 │   ├── models/              # 数据模型
-│   ├── utils/               # 工具函数
+│   ├── utils/               # 工具函数（缓存、日志）
 │   ├── config.py            # 配置管理
 │   └── main.py              # FastAPI入口
 ├── data/
@@ -289,6 +328,8 @@ GET /api/v1/health
 ├── test_api.py              # 测试脚本
 ├── requirements.txt         # 依赖清单
 ├── .env.example             # 配置模板
+├── Dockerfile               # Docker镜像
+├── docker-compose.yml       # Docker编排
 └── README.md                # 项目说明
 ```
 
@@ -300,7 +341,7 @@ GET /api/v1/health
 
 | 配置项 | 说明 | 获取方式 |
 |--------|------|---------|
-| `DASHSCOPE_API_KEY` | 通义千问API Key（用于LLM和Embedding） | https://dashscope.console.aliyun.com/ |
+| `DASHSCOPE_API_KEY` | 通义千问API Key（用于LLM、Embedding和重排序） | https://dashscope.console.aliyun.com/ |
 | `TAVILY_API_KEY` | Tavily搜索API Key | https://tavily.com/ |
 
 ### ChromaDB配置
@@ -317,6 +358,12 @@ GET /api/v1/health
 | `LLM_MODEL` | `qwen-turbo` | LLM模型名称 |
 | `EMBEDDING_MODEL` | `text-embedding-v2` | Embedding模型名称 |
 
+### CORS配置
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `CORS_ORIGINS` | `["*"]` | 允许的跨域来源列表，生产环境应设置为具体域名 |
+
 ---
 
 ## 问答结果控制
@@ -329,7 +376,6 @@ class QueryData(BaseModel):
     sources: List[SourceInfo]      # 来源信息列表
     query_time_ms: int             # 查询耗时(毫秒)
     used_web_search: bool          # 是否使用了网络检索
-    cache_hit: bool                # 是否命中缓存
 
 class SourceInfo(BaseModel):
     chunk_id: str                  # 切片ID
@@ -347,11 +393,13 @@ class SourceInfo(BaseModel):
 | 参数 | 位置 | 默认值 | 作用 |
 |------|------|--------|------|
 | `SYSTEM_PROMPT` | app/chains/prompts.py | - | LLM角色设定、回答原则 |
-| `max_context_length` | app/chains/rag_chain.py | 6000 | 上下文最大字符数 |
-| `max_tokens` | app/infrastructure/llm.py | 1000 | 生成答案最大token数 |
-| `temperature` | app/infrastructure/llm.py | 0.1 | 生成温度 |
-| `vector_weight` | app/retrievers/ensemble_retriever.py | 0.6 | 向量检索权重 |
-| `bm25_weight` | app/retrievers/ensemble_retriever.py | 0.4 | BM25检索权重 |
+| `max_context_length` | app/config.py | 6000 | 上下文最大字符数 |
+| `max_tokens` | app/config.py | 1000 | 生成答案最大token数 |
+| `temperature` | app/config.py | 0.1 | 生成温度 |
+| `vector_weight` | app/config.py | 0.6 | 向量检索权重 |
+| `bm25_weight` | app/config.py | 0.4 | BM25检索权重 |
+| `local_weight` | app/config.py | 0.7 | 本地结果重排序权重（回退策略） |
+| `web_weight` | app/config.py | 0.3 | 网络结果重排序权重（回退策略） |
 
 ---
 
@@ -364,12 +412,14 @@ class SourceInfo(BaseModel):
 | 缓存命中延迟 | < 100ms | ✅ |
 | 答案来源可追溯 | 100% | ✅ |
 | 网络检索补充 | 支持 | ✅ |
+| 语义重排序 | 支持 | ✅ |
+| LLM查询重写 | 支持 | ✅ |
+| 来源上下文 | 支持 | ✅ |
 | LangChain集成 | 完成 | ✅ |
 
 ---
 
-**项目版本**：v2.0.0-chromadb  
-**分支**：chromadb  
+**项目版本**：v2.1.0  
 **框架**：LangChain 0.3.x  
 **向量数据库**：ChromaDB  
 **服务端口**：5002

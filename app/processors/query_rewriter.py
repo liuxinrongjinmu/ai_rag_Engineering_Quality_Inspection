@@ -85,21 +85,27 @@ class QueryRewriter:
     def rewrite(self, query: str) -> str:
         """
         重写查询
-        
+
         :param query: 原始查询
         :return: 重写后的查询
         """
         if not query or not query.strip():
             return query
-        
+
         original_query = query.strip()
-        
+
         # 1. 规则替换
         rewritten = self._rule_based_rewrite(original_query)
-        
+
+        # 2. 规则替换无变化时，尝试LLM重写
+        if rewritten == original_query and self.api_key:
+            llm_result = self._llm_rewrite(original_query)
+            if llm_result != original_query:
+                rewritten = llm_result
+
         if rewritten != original_query:
             logger.info(f"查询重写: '{original_query}' -> '{rewritten}'")
-        
+
         return rewritten
     
     def _rule_based_rewrite(self, query: str) -> str:

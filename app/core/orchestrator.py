@@ -2,7 +2,7 @@
 查询编排器
 协调整个问答流程：缓存→检索→重排序→RAG Chain→来源提取
 """
-from typing import Dict, Any, Optional, List, Generator
+from typing import Dict, Any, Optional, List, Generator, Tuple
 from loguru import logger
 import time
 
@@ -88,6 +88,7 @@ class QueryOrchestrator:
             local_results=local_results[:top_k],
             web_results=web_results,
             top_k=top_k,
+            query=question,
         )
 
         if not final_results:
@@ -130,14 +131,14 @@ class QueryOrchestrator:
         question: str,
         use_web_search: bool = True,
         top_k: int = 5,
-    ) -> Generator[str, None, None]:
+    ) -> Tuple[Generator[str, None, None], List[SourceInfo], bool]:
         """
         流式处理查询
 
         :param question: 用户问题
         :param use_web_search: 是否使用网络检索
         :param top_k: 返回结果数
-        :yield: 生成的文本片段
+        :return: (文本片段生成器, 来源信息列表, 是否使用网络检索)
         """
         logger.info(f"流式处理查询: {question[:50]}...")
 
@@ -150,9 +151,11 @@ class QueryOrchestrator:
 
         # 3. 网络检索
         web_results: List[Document] = []
+        used_web_search = False
         if use_web_search and self._should_search_web(local_results):
             try:
                 web_results = search_web(question, max_results=top_k)
+                used_web_search = len(web_results) > 0
             except Exception as e:
                 logger.warning(f"网络检索失败: {e}")
 
@@ -165,15 +168,24 @@ class QueryOrchestrator:
             local_results=local_results[:top_k],
             web_results=web_results,
             top_k=top_k,
+            query=question,
         )
 
         if not final_results:
-            yield "抱歉，没有找到相关的信息来回答您的问题。"
-            return
+            sources = []
+            def empty_gen():
+                yield "抱歉，没有找到相关的信息来回答您的问题。"
+            return empty_gen(), sources, False
 
-        # 5. 流式生成
-        for chunk in stream_rag(question, final_results):
-            yield chunk
+        # 5. 提取来源（在流式生成前提取）
+        sources = self._extract_sources(final_results)
+
+        # 6. 流式生成
+        def stream_generator():
+            for chunk in stream_rag(question, final_results):
+                yield chunk
+
+        return stream_generator(), sources, used_web_search
 
     def get_source_detail(self, chunk_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -200,6 +212,14 @@ class QueryOrchestrator:
             metadata = results["metadatas"][0] if results.get("metadatas") else {}
             content = results["documents"][0] if results.get("documents") else ""
 
+            # 查询上下文：同一文档中相邻切片
+            context_before = self._get_adjacent_chunk(
+                collection, metadata, direction="before"
+            )
+            context_after = self._get_adjacent_chunk(
+                collection, metadata, direction="after"
+            )
+
             return {
                 "chunk_id": chunk_id,
                 "doc_id": metadata.get("doc_id", ""),
@@ -207,13 +227,55 @@ class QueryOrchestrator:
                 "page": metadata.get("page"),
                 "section": metadata.get("section"),
                 "full_content": content,
-                "context_before": None,
-                "context_after": None,
+                "context_before": context_before,
+                "context_after": context_after,
             }
 
         except Exception as e:
             logger.error(f"获取来源详情失败: {e}")
             return None
+
+    def _get_adjacent_chunk(
+        self,
+        collection,
+        metadata: Dict[str, Any],
+        direction: str,
+    ) -> Optional[str]:
+        """
+        获取相邻切片内容
+
+        :param collection: ChromaDB集合
+        :param metadata: 当前切片的元数据
+        :param direction: 方向，"before"或"after"
+        :return: 相邻切片内容，不存在则返回None
+        """
+        doc_id = metadata.get("doc_id", "")
+        chunk_index = metadata.get("chunk_index")
+
+        if not doc_id or chunk_index is None:
+            return None
+
+        try:
+            offset = -1 if direction == "before" else 1
+            target_index = chunk_index + offset
+
+            results = collection.get(
+                where={
+                    "$and": [
+                        {"doc_id": {"$eq": doc_id}},
+                        {"chunk_index": {"$eq": target_index}},
+                    ]
+                },
+                include=["documents"],
+                limit=1,
+            )
+
+            if results and results.get("documents"):
+                return results["documents"][0]
+        except Exception as e:
+            logger.debug(f"获取相邻切片失败: {e}")
+
+        return None
 
     def _should_search_web(self, local_results: List[Document]) -> bool:
         """
