@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  rag-app:
+    container_name: rag-app
+    build: .
+    ports:
+      - "5002:5002"
+    environment:
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      # LLM配置
+      - LLM_MODEL=qwen-plus
+      - LLM_TEMPERATURE=0.1
+      - LLM_MAX_TOKENS=1000
+      # Embedding配置
+      - EMBEDDING_MODEL=text-embedding-v2
+      - EMBEDDING_DIM=1536
+      # ChromaDB配置
+      - CHROMA_PERSIST_DIR=/app/data/vectordb/chroma
+      - CHROMA_COLLECTION_NAME=engineering_qa
+      # BM25索引
+      - BM25_INDEX_PATH=/app/data/vectordb/bm25_index.pkl
+      # 切片配置
+      - CHUNK_SIZE=1000
+      - CHUNK_OVERLAP=200
+      - TOP_K_RESULTS=5
+      # 混合检索权重
+      - VECTOR_WEIGHT=0.5
+      - BM25_WEIGHT=0.5
+      - LOCAL_WEIGHT=0.7
+      - WEB_WEIGHT=0.3
+      - LOCAL_THRESHOLD=0.5
+      # RAG配置
+      - MAX_CONTEXT_LENGTH=6000
+      - USE_SEMANTIC_RERANK=false
+      # API配置
+      - API_HOST=0.0.0.0
+      - API_PORT=5002
+      - DEBUG=false
+      # CORS配置（生产环境请改为具体域名）
+      - CORS_ORIGINS=["*"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5002/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    command: sh -c "python scripts/ingest.py && gunicorn app.main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:5002 --timeout 120"
+
+  nginx:
+    image: nginx:alpine
+    container_name: rag-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - rag-app
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

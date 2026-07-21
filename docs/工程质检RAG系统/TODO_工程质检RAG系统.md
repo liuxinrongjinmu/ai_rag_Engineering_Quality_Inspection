@@ -1,0 +1,146 @@
+# TODO - 工程质检RAG系统
+
+## 一、必须完成的配置
+
+### 1. API Key配置
+
+编辑 `.env` 文件，填入以下API Key：
+
+```env
+# 通义千问/DashScope API Key（必须，同时用于LLM、Embedding和语义重排序）
+DASHSCOPE_API_KEY=your_actual_dashscope_api_key
+
+# Tavily搜索API Key（必须，用于网络检索）
+TAVILY_API_KEY=your_actual_tavily_api_key
+
+# CORS配置（生产环境应设置为具体域名）
+# CORS_ORIGINS=["https://your-domain.com"]
+```
+
+**获取方式：**
+- 通义千问/DashScope：https://dashscope.console.aliyun.com/
+- Tavily：https://tavily.com/
+
+**说明：**
+- LLM、Embedding和语义重排序共用同一个DashScope API Key
+- 无需本地部署模型，完全云端调用
+- 语义重排序使用DashScope gte-rerank模型，API不可用时自动回退到本地优先策略
+
+### 2. 依赖安装
+
+```bash
+pip install -r requirements.txt
+```
+
+### 3. 数据入库
+
+将Markdown和Excel文件放入 `data/processed/` 目录，然后执行：
+
+```bash
+python scripts/ingest.py
+```
+
+**入库流程：**
+1. 扫描 `data/processed/` 目录下的文件
+2. 解析Markdown和Excel文件
+3. 文本切片（1000字符/块，保留表格完整性）
+4. 向量化并写入ChromaDB
+5. 构建BM25索引
+
+### 4. 启动服务
+
+```bash
+python -m uvicorn app.main:app --host 127.0.0.1 --port 5002
+```
+
+访问 http://localhost:5002/docs 查看API文档
+
+### 5. Docker部署（可选）
+
+```bash
+docker-compose up -d
+```
+
+---
+
+## 二、已完成优化事项
+
+### v2.1.0 优化（本次）
+- [x] 语义重排序：接入DashScope gte-rerank模型，不可用时回退到本地优先策略
+- [x] LLM查询重写：规则重写无变化时自动调用LLM智能重写
+- [x] 流式接口缓存修复：流式查询也正确缓存和返回来源信息
+- [x] 来源上下文功能：支持查看切片前后文，通过doc_id+chunk_index定位
+- [x] DocumentType枚举补全：新增MARKDOWN类型
+- [x] EnsembleRetriever导入路径修正：langchain_classic → langchain
+- [x] Docker配置修复：移除Milvus残留，端口统一为5002
+- [x] FastAPI lifespan迁移：替代已废弃的on_event装饰器
+- [x] CORS配置化：跨域来源支持环境变量配置
+- [x] 文档全面更新：README、FINAL、TODO同步当前架构
+
+### v2.0.0 LangChain重构
+- [x] LangChain框架重构：自研组件迁移到LangChain标准组件
+- [x] ChromaDB迁移：从Milvus迁移到ChromaDB
+- [x] LCEL链式调用：RAG Chain使用LangChain Expression Language
+
+### v1.x 初始版本
+- [x] 添加内存缓存层，缓存热门查询结果（命中时<100ms响应）
+- [x] 实现流式输出（SSE），提升用户体验
+- [x] 实现并行检索，向量检索和BM25同时执行
+- [x] 来源信息显示唯一文档名称
+- [x] 支持网络检索来源URL显示
+
+---
+
+## 三、待优化事项
+
+### 性能优化
+- [ ] 添加Redis缓存层替代内存缓存（生产环境）
+- [ ] 添加批量查询接口
+- [ ] 优化大文档处理性能
+
+### 功能增强
+- [ ] 添加查询历史记录
+- [ ] 支持多轮对话
+- [ ] 添加文档上传接口
+- [ ] 支持更多文档格式（Word、PPT等）
+- [ ] 添加前端界面
+
+### 工程化
+- [ ] 添加单元测试覆盖
+- [ ] 添加CI/CD配置
+- [ ] 添加监控告警
+
+---
+
+## 四、已知问题
+
+1. **网络检索依赖Tavily API**：如果API不可用，会降级到仅本地检索
+2. **Markdown文件需要手动准备**：PDF需用户自行转换为Markdown格式
+3. **Embedding API调用有成本**：大量数据入库时会产生API调用费用
+4. **语义重排序依赖DashScope API**：gte-rerank不可用时自动回退到本地优先策略
+
+---
+
+## 五、快速验证步骤
+
+```bash
+# 1. 安装依赖
+pip install -r requirements.txt
+
+# 2. 配置API Key
+# 编辑 .env 文件
+
+# 3. 数据入库
+python scripts/ingest.py
+
+# 4. 启动服务
+python -m uvicorn app.main:app --host 127.0.0.1 --port 5002
+
+# 5. 测试接口
+python test_api.py
+```
+
+---
+
+**创建时间**：2026-04-05
+**更新时间**：2026-06-09
