@@ -187,6 +187,14 @@ export function rebuildKnowledge() {
 }
 
 /**
+ * 增量同步知识库（仅处理变更文档）
+ * @returns {Promise<Object>} 同步结果
+ */
+export function syncKnowledge() {
+  return apiClient.post('/admin/knowledge/sync')
+}
+
+/**
  * 获取知识库统计信息
  * @returns {Promise<Object>} 统计信息
  */

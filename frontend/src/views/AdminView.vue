@@ -38,7 +38,7 @@
 
       <!-- 系统状态 -->
       <div v-else-if="activeMenu === 'status'" class="content-panel">
-        <SystemStatus @rebuild="handleRebuild" />
+        <SystemStatus @rebuild="handleRebuild" @sync="handleSync" />
       </div>
     </el-main>
   </el-container>
@@ -50,7 +50,7 @@ import { ElMessage } from 'element-plus'
 import DocList from '../components/DocList.vue'
 import DocUpload from '../components/DocUpload.vue'
 import SystemStatus from '../components/SystemStatus.vue'
-import { getDocuments, deleteDocument, rebuildKnowledge } from '../api'
+import { getDocuments, deleteDocument, rebuildKnowledge, syncKnowledge } from '../api'
 
 /* ==================== 状态 ==================== */
 
@@ -119,6 +119,30 @@ async function handleRebuild() {
   } catch (err) {
     ElMessage.error('重建知识库失败: ' + (err.message || '未知错误'))
     console.error('[AdminView] 重建知识库失败:', err)
+  }
+}
+
+/**
+ * 增量同步知识库
+ */
+async function handleSync() {
+  try {
+    ElMessage.info('正在增量同步知识库，请稍候...')
+    const res = await syncKnowledge()
+    const data = res.data || res
+    const { new_count, modified_count, deleted_count, unchanged_count, total_chunks_added } = data
+    if (new_count === 0 && modified_count === 0 && deleted_count === 0) {
+      ElMessage.success(`知识库已是最新（${unchanged_count}个文件无变更）`)
+    } else {
+      const parts = []
+      if (new_count > 0) parts.push(`新增${new_count}个`)
+      if (modified_count > 0) parts.push(`修改${modified_count}个`)
+      if (deleted_count > 0) parts.push(`删除${deleted_count}个`)
+      ElMessage.success(`增量同步完成: ${parts.join('、')}，共${total_chunks_added}个切片`)
+    }
+  } catch (err) {
+    ElMessage.error('增量同步失败: ' + (err.message || '未知错误'))
+    console.error('[AdminView] 增量同步失败:', err)
   }
 }
 

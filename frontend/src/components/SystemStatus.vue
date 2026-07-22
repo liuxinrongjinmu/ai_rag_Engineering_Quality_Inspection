@@ -11,6 +11,18 @@
           刷新
         </el-button>
         <el-popconfirm
+          title="增量同步仅处理变更文档，未变化文档跳过，是否继续？"
+          confirm-button-text="确认"
+          cancel-button-text="取消"
+          @confirm="$emit('sync')"
+        >
+          <template #reference>
+            <el-button type="success" size="small" :icon="RefreshRight">
+              增量同步
+            </el-button>
+          </template>
+        </el-popconfirm>
+        <el-popconfirm
           title="重建知识库将重新处理所有文档，此操作不可撤销，确认继续？"
           confirm-button-text="确认"
           cancel-button-text="取消"
@@ -18,7 +30,7 @@
         >
           <template #reference>
             <el-button type="warning" size="small" :icon="RefreshRight">
-              重建知识库
+              全量重建
             </el-button>
           </template>
         </el-popconfirm>
@@ -79,7 +91,7 @@ import { getHealth } from '../api'
 /**
  * Emits 定义
  */
-defineEmits(['rebuild'])
+defineEmits(['rebuild', 'sync'])
 
 /**
  * 加载状态

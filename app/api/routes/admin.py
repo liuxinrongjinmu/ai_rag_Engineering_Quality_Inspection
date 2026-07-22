@@ -57,11 +57,12 @@ def _load_single_file(file_path: str) -> List[Any]:
     return loader.load()
 
 
-def _ingest_documents(documents: List[Any]) -> int:
+def _ingest_documents(documents: List[Any], skip_bm25: bool = False) -> int:
     """
-    将Document列表切片、向量化并存入ChromaDB，同时重建BM25索引
+    将Document列表切片、向量化并存入ChromaDB，默认同时重建BM25索引
 
     :param documents: Document列表
+    :param skip_bm25: 是否跳过BM25重建（批量增量同步时由调用方统一重建）
     :return: 入库的切片数量
     """
     from app.config import get_settings
@@ -115,7 +116,8 @@ def _ingest_documents(documents: List[Any]) -> int:
     logger.info(f"入库完成: {len(chunks)}个切片 -> ChromaDB")
 
     # 4. 重建BM25索引
-    _rebuild_bm25_from_chromadb()
+    if not skip_bm25:
+        _rebuild_bm25_from_chromadb()
 
     return len(chunks)
 
@@ -219,6 +221,15 @@ class RebuildResponse(BaseModel):
     code: int = Field(default=0, description="状态码")
     message: str = Field(default="success", description="消息")
     data: Dict[str, Any] = Field(default_factory=dict, description="重建结果")
+
+
+class SyncResponse(BaseModel):
+    """
+    增量同步响应
+    """
+    code: int = Field(default=0, description="状态码")
+    message: str = Field(default="success", description="消息")
+    data: Dict[str, Any] = Field(default_factory=dict, description="同步结果")
 
 
 class DocStatItem(BaseModel):
@@ -522,6 +533,157 @@ async def delete_document(doc_id: str):
     except Exception as e:
         logger.error(f"删除文档失败: {e}")
         raise HTTPException(status_code=500, detail=f"删除文档失败: {str(e)}")
+
+
+def _delete_chunks_by_doc_id(doc_id: str) -> int:
+    """
+    从ChromaDB删除指定doc_id的所有切片
+
+    :param doc_id: 文档ID
+    :return: 删除的切片数量
+    """
+    from app.infrastructure.vectorstore import get_vectorstore
+
+    vectorstore = get_vectorstore()
+    collection = vectorstore._collection
+    existing = collection.get(where={"doc_id": doc_id})
+    if existing and existing.get("ids"):
+        count = len(existing["ids"])
+        collection.delete(ids=existing["ids"])
+        return count
+    return 0
+
+
+@router.post(
+    "/knowledge/sync",
+    response_model=SyncResponse,
+    responses={
+        500: {"model": ErrorResponse, "description": "服务器内部错误"},
+    },
+    summary="增量同步知识库",
+    description="对比文件清单自动识别新增/修改/删除的文档，仅处理变更部分，大幅减少处理时间",
+)
+async def sync_knowledge():
+    """
+    增量同步知识库接口
+
+    - 对比 kb_manifest.json 清单，自动识别新增/修改/删除的文档
+    - 仅处理变更的文档（加载 → 切片 → 向量化 → 入库）
+    - 未变化的文档跳过，大幅减少处理时间
+    - 同步结束后统一重建BM25索引
+    - 智能问答在同步期间可正常使用（不清空现有数据）
+    """
+    from app.utils.kb_manifest import get_manifest
+
+    if not DATA_DIR.exists():
+        raise HTTPException(status_code=400, detail=f"数据目录不存在: {DATA_DIR}")
+
+    try:
+        manifest = get_manifest(str(DATA_DIR))
+        plan = await asyncio.to_thread(manifest.compute_plan, ALLOWED_EXTENSIONS)
+
+        # 无变更
+        if not plan.has_changes:
+            manifest.flush()
+            return SyncResponse(
+                code=0,
+                message="知识库已是最新，无变更",
+                data={
+                    "new_count": 0,
+                    "modified_count": 0,
+                    "deleted_count": 0,
+                    "unchanged_count": plan.unchanged_count,
+                    "total_chunks_added": 0,
+                },
+            )
+
+        total_chunks = 0
+        new_count = 0
+        modified_count = 0
+        deleted_count = 0
+
+        # 1. 处理删除的文件（从ChromaDB移除切片，从清单中移除）
+        for doc_id in plan.deleted_files:
+            removed = _delete_chunks_by_doc_id(doc_id)
+            if removed > 0:
+                deleted_count += 1
+                logger.info(f"增量同步-删除: doc_id={doc_id}, 移除{removed}个切片")
+
+        # 2. 处理新增的文件
+        for file_path in plan.new_files:
+            documents = await asyncio.to_thread(_load_single_file, str(file_path))
+            if not documents:
+                logger.warning(f"增量同步-跳过空文件: {file_path.name}")
+                continue
+
+            doc_id = documents[0].metadata.get("doc_id", "")
+            # 清理可能存在的旧切片（防止manifest与ChromaDB不一致）
+            if doc_id:
+                _delete_chunks_by_doc_id(doc_id)
+
+            chunks = await asyncio.to_thread(_ingest_documents, documents, skip_bm25=True)
+            manifest.update_entry(file_path)
+            total_chunks += chunks
+            new_count += 1
+            logger.info(f"增量同步-新增: {file_path.name}, {chunks}个切片")
+
+        # 3. 处理修改的文件
+        for file_path in plan.modified_files:
+            documents = await asyncio.to_thread(_load_single_file, str(file_path))
+            if not documents:
+                logger.warning(f"增量同步-跳过空文件: {file_path.name}")
+                continue
+
+            doc_id = documents[0].metadata.get("doc_id", "")
+            # 删除旧切片
+            if doc_id:
+                removed = _delete_chunks_by_doc_id(doc_id)
+                logger.info(f"增量同步-清理旧切片: doc_id={doc_id}, {removed}个")
+
+            chunks = await asyncio.to_thread(_ingest_documents, documents, skip_bm25=True)
+            manifest.update_entry(file_path)
+            total_chunks += chunks
+            modified_count += 1
+            logger.info(f"增量同步-修改: {file_path.name}, {chunks}个切片")
+
+        # 4. 处理完所有变更后，统一更新清单中的删除记录
+        for doc_id in plan.deleted_files:
+            # 反向查找 manifest 中的文件名并移除
+            manifest_dict = manifest._manifest
+            for fname, entry in list(manifest_dict.items()):
+                if entry.get("doc_id") == doc_id:
+                    manifest.remove_entry(fname)
+                    break
+
+        # 5. 保存清单
+        manifest.flush()
+
+        # 6. 统一重建BM25索引（仅在确实有变更时）
+        if plan.total_changes > 0:
+            await asyncio.to_thread(_rebuild_bm25_from_chromadb)
+
+        # 7. 递增知识库版本号，使缓存自动失效
+        from app.utils.cache import bump_kb_generation
+        new_gen = bump_kb_generation()
+        logger.info(f"增量同步完成，知识库版本号已更新至 {new_gen}")
+
+        return SyncResponse(
+            code=0,
+            message="增量同步完成",
+            data={
+                "new_count": new_count,
+                "modified_count": modified_count,
+                "deleted_count": deleted_count,
+                "unchanged_count": plan.unchanged_count,
+                "total_chunks_added": total_chunks,
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"增量同步失败: {e}")
+        raise HTTPException(status_code=500, detail=f"增量同步失败: {str(e)}")
 
 
 @router.post(
