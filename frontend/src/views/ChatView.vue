@@ -1,9 +1,25 @@
 <!--
   智能问答页面
   核心问答交互界面：消息列表、流式输出、来源追溯
+  会话历史跨路由保持
 -->
 <template>
   <div class="chat-view">
+    <!-- 顶部工具栏 -->
+    <div class="chat-toolbar" v-if="messages.length > 0">
+      <span class="toolbar-title">智能问答</span>
+      <el-button
+        :icon="PlusIcon"
+        type="primary"
+        plain
+        size="small"
+        @click="handleNewChat"
+        :disabled="$chat.isLoading"
+      >
+        新会话
+      </el-button>
+    </div>
+
     <!-- 对话滚动区域 -->
     <el-scrollbar ref="scrollbarRef" class="chat-scrollbar" always>
       <div class="chat-container">
@@ -47,7 +63,7 @@
     <!-- 底部输入区 -->
     <div class="chat-footer">
       <ChatInput
-        :disabled="isLoading"
+        :disabled="$chat.isLoading"
         @send="handleSend"
       />
 
@@ -65,46 +81,35 @@
 <script setup>
 import { ref, nextTick, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { Plus, ChatDotRound } from '@element-plus/icons-vue'
 import ChatMessage from '../components/ChatMessage.vue'
 import ChatInput from '../components/ChatInput.vue'
 import SourceCard from '../components/SourceCard.vue'
 import SourceDetail from '../components/SourceDetail.vue'
 import QuickQuestions from '../components/QuickQuestions.vue'
 import { streamQuery } from '../api'
+import { useChatStore } from '../stores/chat'
 
-/* ==================== 响应式状态 ==================== */
+/* ==================== 共享状态（跨路由保持） ==================== */
+const { state: $chat, newChat, addMessage, abortCurrentRequest } = useChatStore()
 
-/**
- * 消息列表
- * 每条消息: { role, content, sources, queryTimeMs, isStreaming }
- */
-const messages = ref([])
-
-/**
- * 加载状态（正在等待 AI 回复）
- */
-const isLoading = ref(false)
-
-/**
- * 当前 SSE 请求的 AbortController，用于中断请求
- */
-let currentAbortController = null
-
-/**
- * 滚动条组件引用
- */
+/* ==================== 滚动条组件引用 ==================== */
 const scrollbarRef = ref(null)
 
-/**
- * 当前查看详情的切片 ID
- */
+/* ==================== 来源详情 ==================== */
 const selectedChunkId = ref('')
+
+/* ==================== 便捷计算属性 ==================== */
+
+// 直接引用共享状态中的 messages 和 isLoading，在模板中和 tooltip 中使用
+const messages = $chat.messages
+// 注意：模板中直接使用 $chat.isLoading，此处不再单独声明 isLoading 变量
+
+/* ==================== ElMessage 图标 ==================== */
+const PlusIcon = Plus
 
 /* ==================== 滚动控制 ==================== */
 
-/**
- * 滚动到底部
- */
 async function scrollToBottom() {
   await nextTick()
   const wrap = scrollbarRef.value?.wrapRef
@@ -113,20 +118,11 @@ async function scrollToBottom() {
   }
 }
 
-/**
- * 监听消息列表变化，自动滚动到底部
- */
-watch(
-  () => messages.value.length,
-  () => scrollToBottom()
-)
+watch(() => messages.length, () => scrollToBottom())
 
-/**
- * 监听流式内容更新，平滑滚动
- */
 watch(
   () => {
-    const last = messages.value[messages.value.length - 1]
+    const last = messages[messages.length - 1]
     return last?.content
   },
   () => scrollToBottom()
@@ -134,28 +130,12 @@ watch(
 
 /* ==================== 核心交互 ==================== */
 
-/**
- * 处理发送消息
- * @param {Object} payload - { question, useWebSearch }
- */
 function handleSend({ question, useWebSearch }) {
   // 中断正在进行的请求
-  if (currentAbortController) {
-    currentAbortController.abort()
-    currentAbortController = null
-    // 修复中断状态：将最后一条助手消息标记为非流式
-    const lastMsg = messages.value[messages.value.length - 1]
-    if (lastMsg && lastMsg.role === 'assistant' && lastMsg.isStreaming) {
-      lastMsg.isStreaming = false
-      if (!lastMsg.content) {
-        lastMsg.content = '回答已中断。'
-      }
-    }
-    isLoading.value = false
-  }
+  abortCurrentRequest()
 
   // 添加用户消息
-  messages.value.push({
+  addMessage({
     role: 'user',
     content: question,
     sources: [],
@@ -164,8 +144,8 @@ function handleSend({ question, useWebSearch }) {
   })
 
   // 添加占位的助手消息（流式填充）
-  const assistantIndex = messages.value.length
-  messages.value.push({
+  const assistantIndex = messages.length
+  addMessage({
     role: 'assistant',
     content: '',
     sources: [],
@@ -173,70 +153,56 @@ function handleSend({ question, useWebSearch }) {
     isStreaming: true,
   })
 
-  isLoading.value = true
+  $chat.isLoading = true
 
   // 发起 SSE 流式请求
-  currentAbortController = streamQuery(
+  const abortCtrl = streamQuery(
     { question, useWebSearch },
     {
-      /**
-       * 收到每个 token 时的回调
-       */
       onToken(token) {
-        const msg = messages.value[assistantIndex]
+        const msg = messages[assistantIndex]
         if (msg) {
           msg.content += token
         }
       },
-
-      /**
-       * 回答完成时的回调
-       */
       onDone({ sources, queryTimeMs, usedWebSearch, cached }) {
-        const msg = messages.value[assistantIndex]
+        const msg = messages[assistantIndex]
         if (msg) {
           msg.sources = sources
           msg.queryTimeMs = queryTimeMs
           msg.isStreaming = false
         }
-        isLoading.value = false
-        currentAbortController = null
+        $chat.isLoading = false
+        $chat.currentAbortController = null
 
         if (cached) {
           ElMessage.success('命中缓存，响应已加速')
         }
       },
-
-      /**
-       * 发生错误时的回调
-       */
       onError(error) {
-        const msg = messages.value[assistantIndex]
+        const msg = messages[assistantIndex]
         if (msg) {
           msg.content = `抱歉，回答生成失败：${error.message || '未知错误'}`
           msg.isStreaming = false
         }
-        isLoading.value = false
-        currentAbortController = null
+        $chat.isLoading = false
+        $chat.currentAbortController = null
 
         ElMessage.error('回答生成失败，请稍后重试')
       },
     }
   )
+  $chat.currentAbortController = abortCtrl
 }
 
-/**
- * 处理快捷问题点击
- * @param {string} question - 问题文本
- */
 function handleQuickQuestion(question) {
   handleSend({ question, useWebSearch: false })
 }
 
-/**
- * 打开来源详情
- * @param {string} chunkId - 切片 ID
- */
+function handleNewChat() {
+  newChat()
+}
+
 function openSourceDetail(chunkId) {
   selectedChunkId.value = chunkId
 }
@@ -251,6 +217,23 @@ function openSourceDetail(chunkId) {
   background: var(--bg-color);
 }
 
+/* ==================== 顶部工具栏 ==================== */
+.chat-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 20px;
+  background: #fff;
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.toolbar-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
 /* ==================== 滚动区域 ==================== */
 .chat-scrollbar {
   flex: 1;
@@ -261,7 +244,7 @@ function openSourceDetail(chunkId) {
   max-width: 800px;
   margin: 0 auto;
   padding: 24px 20px;
-  min-height: 100%;
+  min-height: calc(100% - 56px);
   display: flex;
   flex-direction: column;
 }

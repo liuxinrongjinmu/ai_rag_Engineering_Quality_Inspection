@@ -2,8 +2,10 @@
 FastAPI应用入口
 """
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, HTMLResponse
 from loguru import logger
 import sys
 from pathlib import Path
@@ -82,19 +84,36 @@ app.include_router(source.router, prefix="/api/v1")
 app.include_router(health.router, prefix="/api/v1")
 app.include_router(admin_router, prefix="/api/v1")
 
+# 托管前端静态文件（生产模式：前端构建为dist，后端直接服务）
+FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
+if FRONTEND_DIST.exists():
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
 
-@app.get("/", tags=["根路径"])
-async def root():
-    """
-    根路径
-    """
-    return {
-        "name": "工程质检RAG系统",
-        "version": "2.3.0",
-        "framework": "LangChain",
-        "docs": "/docs",
-        "health": "/api/v1/health"
-    }
+    @app.get("/", response_class=HTMLResponse)
+    async def spa_root():
+        """SPA入口：返回index.html"""
+        return FileResponse(FRONTEND_DIST / "index.html")
+
+    @app.get("/{full_path:path}", response_class=HTMLResponse)
+    async def spa_fallback(full_path: str):
+        """SPA回退：非API路径返回index.html，由Vue Router处理"""
+        file_path = FRONTEND_DIST / full_path
+        if file_path.is_file():
+            return FileResponse(file_path)
+        return FileResponse(FRONTEND_DIST / "index.html")
+
+    logger.info(f"前端静态文件托管已启用: {FRONTEND_DIST}")
+else:
+    @app.get("/", tags=["根路径"])
+    async def root():
+        """根路径（前端未构建时返回JSON）"""
+        return {
+            "name": "工程质检RAG系统",
+            "version": "2.3.0",
+            "framework": "LangChain",
+            "docs": "/docs",
+            "health": "/api/v1/health"
+        }
 
 
 if __name__ == "__main__":

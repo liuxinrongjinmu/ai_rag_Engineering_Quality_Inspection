@@ -285,13 +285,14 @@ class QueryCache:
 
     def _generate_key(self, question: str, use_web_search: bool = False) -> str:
         """
-        生成缓存键
+        生成缓存键（含知识库版本，重建后自动失效）
 
         :param question: 问题
         :param use_web_search: 是否使用网络检索
         :return: 缓存键
         """
-        content = f"{question}:{use_web_search}"
+        kb_gen = _get_kb_generation()
+        content = f"{question}:{use_web_search}:kb_gen{kb_gen}"
         return f"rag:cache:{hashlib.md5(content.encode('utf-8')).hexdigest()}"
 
     def get(
@@ -391,3 +392,55 @@ def get_query_cache(
         )
 
     return _cache_instance
+
+
+# ======== 知识库版本号（缓存自动失效机制）========
+# 重建知识库后版本号递增，所有缓存 key 自动变化，旧缓存自然失效
+# 无需跨进程通信，所有进程读取同一个文件
+
+import os as _os
+
+_KB_GEN_FILE = None
+
+
+def _get_kb_gen_file() -> str:
+    """获取知识库版本文件路径"""
+    global _KB_GEN_FILE
+    if _KB_GEN_FILE is None:
+        from app.config import get_settings as _get_settings
+        _settings = _get_settings()
+        chroma_dir = _settings.CHROMA_PERSIST_DIR
+        _KB_GEN_FILE = str(Path(chroma_dir) / "kb_generation.txt")
+    return _KB_GEN_FILE
+
+
+def _get_kb_generation() -> int:
+    """
+    读取当前知识库版本号（所有进程共享，通过文件读取）
+
+    :return: 版本号，不存在则返回 0
+    """
+    try:
+        gen_file = _get_kb_gen_file()
+        if _os.path.exists(gen_file):
+            with open(gen_file, 'r') as f:
+                return int(f.read().strip())
+    except Exception:
+        pass
+    return 0
+
+
+def bump_kb_generation() -> int:
+    """
+    递增知识库版本号（重建KB后调用，使所有缓存自动失效）
+
+    :return: 新版本号
+    """
+    gen_file = _get_kb_gen_file()
+    current = _get_kb_generation()
+    new_gen = current + 1
+    _os.makedirs(_os.path.dirname(gen_file), exist_ok=True)
+    with open(gen_file, 'w') as f:
+        f.write(str(new_gen))
+    logger.info(f"知识库版本号已更新: {current} -> {new_gen}（所有查询缓存自动失效）")
+    return new_gen

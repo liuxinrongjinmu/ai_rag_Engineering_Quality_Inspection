@@ -439,7 +439,7 @@ async def delete_document(doc_id: str):
     删除文档接口
 
     - 从ChromaDB删除指定doc_id的所有切片
-    - 同步删除 data/processed/ 中的源文件
+    - 同步删除 data/processed/ 中的源文件（基于metadata中的file_path）
     - 自动重建BM25索引
     """
     try:
@@ -448,7 +448,7 @@ async def delete_document(doc_id: str):
         vectorstore = get_vectorstore()
         collection = vectorstore._collection
 
-        # 先查询该文档的切片数量
+        # 先查询该文档的切片数量和元数据
         existing = collection.get(
             where={"doc_id": doc_id},
             include=["metadatas"],
@@ -459,30 +459,52 @@ async def delete_document(doc_id: str):
 
         deleted_count = len(existing["ids"])
         doc_name = ""
+        source_file_path = ""
         if existing.get("metadatas"):
             doc_name = existing["metadatas"][0].get("doc_name", "")
+            # 从metadata中取原始文件路径（上传时由document_loader写入）
+            source_file_path = existing["metadatas"][0].get("file_path", "")
 
-        # 从ChromaDB删除
+        # 从ChromaDB删除所有切片
         collection.delete(where={"doc_id": doc_id})
-        logger.info(f"已从ChromaDB删除文档: doc_id={doc_id}, 删除{deleted_count}个切片")
+        logger.info(f"已从ChromaDB删除文档: doc_id={doc_id}, doc_name={doc_name}, 删除{deleted_count}个切片")
 
         # 同步删除 data/processed/ 下的源文件，避免重建知识库时再次出现
-        if doc_name:
-            source_path = DATA_DIR / doc_name
+        deleted_files = []
+        if source_file_path:
+            source_path = Path(source_file_path)
             try:
                 if source_path.exists() and source_path.is_file():
                     source_path.unlink()
+                    deleted_files.append(str(source_path))
                     logger.info(f"已删除源文件: {source_path}")
             except Exception as file_error:
                 logger.warning(f"删除源文件失败: {source_path}, 错误: {file_error}")
 
+        if not deleted_files:
+            # 回退：尝试用 doc_name 匹配（兼容旧数据没有file_path的情况）
+            logger.warning(f"metadata中无file_path，尝试用doc_name匹配源文件: {doc_name}")
+            for ext in ALLOWED_EXTENSIONS:
+                fallback_path = DATA_DIR / f"{doc_name}{ext}"
+                try:
+                    if fallback_path.exists() and fallback_path.is_file():
+                        fallback_path.unlink()
+                        deleted_files.append(str(fallback_path))
+                        logger.info(f"已删除源文件(回退匹配): {fallback_path}")
+                        break
+                except Exception as file_error:
+                    logger.warning(f"删除源文件失败: {fallback_path}, 错误: {file_error}")
+
+        if not deleted_files:
+            logger.warning(f"未能找到源文件: doc_name={doc_name}, source_file_path={source_file_path}")
+
         # 重建BM25索引
         await asyncio.to_thread(_rebuild_bm25_from_chromadb)
 
-        # 清除查询缓存
-        from app.utils.cache import get_query_cache
-        await asyncio.to_thread(get_query_cache().clear)
-        logger.info("查询缓存已清除（文档删除）")
+        # 递增知识库版本号，使所有缓存自动失效（跨进程安全）
+        from app.utils.cache import bump_kb_generation
+        new_gen = bump_kb_generation()
+        logger.info(f"文档删除完成，知识库版本号已更新至 {new_gen}")
 
         return DeleteResponse(
             code=0,
@@ -491,6 +513,7 @@ async def delete_document(doc_id: str):
                 "doc_id": doc_id,
                 "doc_name": doc_name,
                 "deleted_chunks": deleted_count,
+                "deleted_files": deleted_files,
             },
         )
 
@@ -548,10 +571,10 @@ async def rebuild_knowledge():
         # 3. 切片 → 向量化 → 入库 → BM25
         chunk_count = await asyncio.to_thread(_ingest_documents, documents)
 
-        # 4. 清除查询缓存（知识库数据已更新，缓存过期）
-        from app.utils.cache import get_query_cache
-        await asyncio.to_thread(get_query_cache().clear)
-        logger.info("查询缓存已清除（知识库重建）")
+        # 4. 递增知识库版本号，使所有查询缓存自动失效（跨进程安全）
+        from app.utils.cache import bump_kb_generation
+        new_gen = bump_kb_generation()
+        logger.info(f"知识库版本号已更新至 {new_gen}，所有缓存自动失效")
 
         return RebuildResponse(
             code=0,
