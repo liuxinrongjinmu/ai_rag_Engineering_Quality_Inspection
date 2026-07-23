@@ -69,6 +69,9 @@ class TextChunker:
         """
         切分Document列表，根据 doc_type 选择策略
 
+        对于文本量小于 chunk_size 的小文档，额外插入一个全文档概览切片，
+        确保概览类问题（如"有哪些指标""分为几级"）能直接命中完整文档上下文。
+
         :param documents: 原始Document列表
         :return: 切分后的Document列表
         """
@@ -77,6 +80,27 @@ class TextChunker:
 
         for doc in documents:
             doc_type = doc.metadata.get("doc_type", "txt")
+            doc_text = doc.page_content.strip()
+            doc_len = len(doc_text)
+
+            # 小文档（文本量 < chunk_size）：先插入全文档概览切片
+            overview_added = False
+            if doc_type != "excel" and doc_len > 0 and doc_len < self.chunk_size:
+                overview_meta = doc.metadata.copy()
+                overview_meta["chunk_index"] = chunk_index
+                overview_meta["chunk_type"] = "overview"
+                overview_meta["chunk_id"] = self._generate_chunk_id(
+                    overview_meta.get("doc_id", ""), chunk_index
+                )
+                overview_doc = Document(
+                    page_content=f"[文档概览]\n{doc_text}",
+                    metadata=overview_meta,
+                )
+                all_chunks.append(overview_doc)
+                chunk_index += 1
+                overview_added = True
+                logger.debug(f"小文档概览切片已追加: {doc.metadata.get('doc_name', '?')} ({doc_len}字符)")
+
             try:
                 if doc_type == "excel":
                     chunks = self._split_excel_document(doc, chunk_index)
@@ -92,6 +116,9 @@ class TextChunker:
             if chunks:
                 all_chunks.extend(chunks)
                 chunk_index += len(chunks)
+
+            # 概览切片追加后跳过了 chunk_index 递增，需要重新编号后续切片
+            # （已通过 split_document 内的 start_index 参数自然处理）
 
         logger.info(f"切片完成: {len(documents)}个文档 -> {len(all_chunks)}个切片")
         return all_chunks

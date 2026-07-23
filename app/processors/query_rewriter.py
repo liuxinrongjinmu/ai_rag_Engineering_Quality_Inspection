@@ -265,7 +265,7 @@ class QueryRewriter:
     INTENT_PATTERNS = {
         "numeric": r'多少|几[个处次]|扣[多少几分]|罚[多少款钱]|不低于|不超过|不小于|不大于|大于|小于|等于|标准值|规定值',
         "procedure": r'步骤|流程|怎么做|如何[做检测]|方法|操作|规程|顺序|过程',
-        "overview": r'包含哪些|有哪些|哪些项目|种类|分类|类型|分为|分为几|有几[种个]|分别是什么|都[有些]什么',
+        "overview": r'包含哪些|有哪些|哪些项目|种类|分类|类型|分为|分为几|有几[种个]|分别是什么|都[有些]什么|等级|级别|几级|严重等级|有几级',
         "impact": r'影响|后果|怎么样|有啥|有什么|会怎样|处罚|罚款|处理',
         "causal": r'为什么|原因|为何|怎么造成|怎么会',
         "comparison": r'区别|不同|对比|哪个|哪种|还是|或者',
@@ -412,13 +412,13 @@ class QueryRewriter:
             if "包含" in query or "有哪些" in query or "哪些" in query:
                 variants.append(query.replace("包含哪些", "").replace("有哪些", "").replace("哪些", "").strip() + " 检测项目 分类")
                 variants.append(query.replace("哪些项目", "").strip() + " 试验项目 分类")
-            # 等级分类类：明确检索等级词条（甲级/乙级/丙级/专项等）
-            if "等级" in query:
-                # BM25友好：精确短语匹配（"等级分为综合类"仅出现在4.2节）
-                variants.append("等级分为综合类 专项类")
-                variants.append("综合类设甲 乙 丙 3个等级")
-                variants.append("检测机构等级 综合类 专项类 甲级 乙级 丙级")
-                variants.append("等级标准 甲级 乙级 丙级 专项")
+            # 等级/级别分类类：明确检索等级词条
+            if "等级" in query or "级别" in query or "几级" in query:
+                # 提取主体词（如"塔吊报警严重程度"），生成更直接的检索变体
+                subject = re.sub(r'分为|有几|几级|等级|级别|包含哪些|有哪些|哪些|项目|种类|分类|类型|分别是什么|都[有些]什么|[?？]', '', query).strip()
+                if subject:
+                    variants.append(f"{subject} 等级 级别 分为")
+                    variants.append(f"{subject} 严重等级 处理方案")
 
         elif intent == "causal":
             # 原因类：生成"原因分析"、"影响因素"变体

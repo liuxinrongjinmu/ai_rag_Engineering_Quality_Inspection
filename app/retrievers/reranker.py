@@ -67,7 +67,7 @@ class Reranker:
                 logger.warning(f"语义重排序失败，回退到本地优先策略: {e}")
 
         # 回退到本地优先策略
-        return self._fallback_rerank(local_results, web_results, top_k)
+        return self._fallback_rerank(local_results, web_results, top_k, query=query)
 
     def _semantic_boost_fusion(
         self,
@@ -196,6 +196,14 @@ class Reranker:
                 if matched_keywords:
                     score_boost += 0.08 * len(matched_keywords)
 
+            # doc_name 包含查询核心实体词时大幅加权：
+            # 用户用文档主题词提问时，优先返回该文档的切片
+            if query_entity_keywords:
+                doc_name = metadata.get("doc_name", "")
+                matched_name_keywords = [kw for kw in query_entity_keywords if kw in doc_name]
+                if matched_name_keywords:
+                    score_boost += 0.25 * len(matched_name_keywords)
+
             # 强信号词匹配（如"投诉"对应投诉条款），额外大幅加权
             strong_signals = self._extract_strong_signals(query)
             if strong_signals:
@@ -228,17 +236,18 @@ class Reranker:
 
     def _extract_entity_keywords(self, query: str) -> List[str]:
         """
-        从查询中提取核心实体词，用于内容匹配加权
+        从查询中提取核心实体词（使用 jieba 分词），用于内容匹配加权
         """
-        # 过滤停用词和通用词，保留具体名词
+        import jieba
+
         stop_words = {
             '的', '了', '和', '是', '在', '有', '对', '为', '与', '及', '或',
             '多少', '几', '什么', '怎么', '如何', '请问', '帮我', '查一下',
             '一次', '每次', '一个', '一次', '规定', '标准', '办法',
+            '哪些', '指标', '说明', '有哪', '几项',
         }
-        # 提取长度>=2 的中文词、字母数字词
-        tokens = re.findall(r'[\u4e00-\u9fa5]{2,}|[A-Za-z0-9]+', query)
-        keywords = [t for t in tokens if t not in stop_words and len(t) >= 2]
+        tokens = list(jieba.cut(query))
+        keywords = [t.strip() for t in tokens if t.strip() not in stop_words and len(t.strip()) >= 2]
         return keywords
 
     def _extract_strong_signals(self, query: str) -> List[str]:
@@ -309,19 +318,75 @@ class Reranker:
         local_results: List[Document],
         web_results: List[Document],
         top_k: int,
+        query: Optional[str] = None,
     ) -> List[Document]:
         """
         本地优先策略重排序（回退方案）
+
+        当查询包含明确实体词且命中文档名时，优先将所有同名文档的切片排在前面，
+        确保同一主题文档的完整内容不被无关文档插队。
 
         :param local_results: 本地检索结果
         :param web_results: 网络检索结果
         :param top_k: 返回数量
         :return: 重排序后的结果
         """
-        scored_results = []
+        query_keywords = self._extract_entity_keywords(query) if query else []
 
-        for i, doc in enumerate(local_results):
-            score = self.local_weight * (1.0 - i * 0.05)
+        # 找出 doc_name 命中查询实体词的文档名集合，并按命中数排序
+        doc_name_hits: dict = {}
+        if query_keywords:
+            for doc in local_results:
+                doc_name = doc.metadata.get("doc_name", "")
+                if doc_name:
+                    hits = sum(1 for kw in query_keywords if kw in doc_name)
+                    if hits > 0 and doc_name not in doc_name_hits:
+                        doc_name_hits[doc_name] = hits
+            # 构建命中文档名集合
+            matched_doc_names = set(doc_name_hits.keys())
+
+        # 分别收集命中文档和非命中文档
+        matched_docs = []
+        other_docs = []
+        for doc in local_results:
+            doc_name = doc.metadata.get("doc_name", "")
+            if doc_name in matched_doc_names:
+                matched_docs.append(doc)
+            else:
+                other_docs.append(doc)
+
+        # 命中文档按关键词命中数降序、同组内按原位置排序
+        def _sort_by_position(docs: list, orig_list: list) -> list:
+            """按在原列表中的出现顺序排序"""
+            pos = {id(d): i for i, d in enumerate(orig_list)}
+            return sorted(docs, key=lambda d: pos.get(id(d), 9999))
+
+        # 先按命中数分组，每组内按原位置排序
+        by_hits: dict = {}
+        for doc in matched_docs:
+            doc_name = doc.metadata.get("doc_name", "")
+            hits = doc_name_hits.get(doc_name, 0)
+            if hits not in by_hits:
+                by_hits[hits] = []
+            by_hits[hits].append(doc)
+
+        matched_docs = []
+        for hits in sorted(by_hits.keys(), reverse=True):
+            matched_docs.extend(_sort_by_position(by_hits[hits], local_results))
+
+        other_docs = _sort_by_position(other_docs, local_results)
+
+        # 合并：命中文档全部在前，无关文档在后
+        reordered = matched_docs + other_docs
+
+        scored_results = []
+        for i, doc in enumerate(reordered):
+            score = self.local_weight * (1.0 - min(i, 20) * 0.03)
+            # doc_name 匹配加权（兜底）
+            doc_name = doc.metadata.get("doc_name", "")
+            if query_keywords and doc_name:
+                name_hits = sum(1 for kw in query_keywords if kw in doc_name)
+                score += 2.0 * name_hits
             scored_results.append((score, doc))
 
         for i, doc in enumerate(web_results):
@@ -331,7 +396,7 @@ class Reranker:
         scored_results.sort(key=lambda x: x[0], reverse=True)
         final_results = [doc for _, doc in scored_results[:top_k]]
 
-        logger.info(f"重排序完成(本地优先): 本地{len(local_results)}条, 网络{len(web_results)}条, 最终{len(final_results)}条")
+        logger.info(f"重排序完成(本地优先): 命中文档{len(matched_docs)}条, 其他{len(other_docs)}条, 最终{len(final_results)}条")
         return final_results
 
 

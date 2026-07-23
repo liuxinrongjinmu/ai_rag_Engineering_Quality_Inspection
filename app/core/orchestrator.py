@@ -115,6 +115,11 @@ class QueryOrchestrator:
                 multi_query_hybrid_retrieve, expanded_queries, top_k=top_k, final_top_k=top_k * 5
             )
 
+        logger.info(
+            "[DEBUG] 多查询检索后 top10: "
+            + ", ".join([f"{d.metadata.get('doc_name', '?')[:20]}" for d in local_results[:10]])
+        )
+
         # 3. 重排序（输入窗口更大）
         reranker = get_reranker(
             local_weight=self.settings.LOCAL_WEIGHT,
@@ -125,6 +130,11 @@ class QueryOrchestrator:
             web_results=web_results,
             top_k=top_k,
             query=question,
+        )
+
+        logger.info(
+            f"[DEBUG] 重排序后 top{top_k}: "
+            + ", ".join([f"{d.metadata.get('doc_name', '?')[:20]}" for d in final_results[:top_k]])
         )
 
         if not final_results:
