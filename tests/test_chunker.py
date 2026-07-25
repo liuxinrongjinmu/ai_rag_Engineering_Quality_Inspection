@@ -189,6 +189,7 @@ class TestTextChunker:
         assert len(chunks) == 1, f"短文本应产生1个切片，实际: {len(chunks)}"
         assert short_text in chunks[0].page_content, "切片内容应包含原文"
         assert chunks[0].metadata.get("doc_id") == "test-short", "元数据中的 doc_id 应保留"
+        assert chunks[0].metadata.get("chunk_type") == "overview", "小文档应生成概览切片"
 
     def test_chunk_size_limit(self):
         """
@@ -248,7 +249,7 @@ class TestTextChunker:
                 "doc_id 应保留在每个切片中"
             assert chunk.metadata.get("doc_name") == "preserve_test.md", \
                 "doc_name 应保留在每个切片中"
-            assert chunk.metadata.get("chunk_type") in ["paragraph", "table_row", "excel_row", "article"], \
+            assert chunk.metadata.get("chunk_type") in ["paragraph", "table_row", "excel_row", "article", "overview"], \
                 "切片类型应被正确标记"
 
         for i, chunk in enumerate(chunks):
@@ -278,7 +279,9 @@ class TestTextChunker:
         测试：PDF/Word 中的条例项（第X条、X、（X））应每条独立切片，
               并正确合并跨行内容
         """
-        chunker = TextChunker(chunk_size=1000, chunk_overlap=200, min_chunk_size=20)
+        # 使用较小的 chunk_size，确保文档长度超过 chunk_size，
+        # 从而测试条例项切分而不是小文档概览切片。
+        chunker = TextChunker(chunk_size=100, chunk_overlap=20, min_chunk_size=20)
 
         text = """第五章  工作质量考核标准
 第九条  工作质量考核实行扣分制。工作质量指个金客户经理在

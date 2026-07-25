@@ -79,7 +79,9 @@ class QueryOrchestrator:
         # 1. 查询重写与扩展
         query_rewriter = get_query_rewriter(api_key=self.settings.DASHSCOPE_API_KEY)
         rewritten_query = query_rewriter.rewrite(question)
-        expanded_queries = query_rewriter.expand_query(rewritten_query)
+        # 扩展基于原始问题：expand_query 内部会生成重写版本，且能保留
+        # "有哪些"等概览信号词，避免重写后丢失 overview 召回逻辑
+        expanded_queries = query_rewriter.expand_query(question)
         if rewritten_query != question:
             logger.info(f"查询已重写: {rewritten_query}")
         if len(expanded_queries) > 1:
@@ -193,8 +195,8 @@ class QueryOrchestrator:
 
         # 1. 查询重写与扩展
         query_rewriter = get_query_rewriter(api_key=self.settings.DASHSCOPE_API_KEY)
-        rewritten_query = query_rewriter.rewrite(question)
-        expanded_queries = query_rewriter.expand_query(rewritten_query)
+        # 扩展基于原始问题，保留概览信号词
+        expanded_queries = query_rewriter.expand_query(question)
 
         # 2. 并行：本地多查询混合检索 + 网络检索
         web_results: List[Document] = []

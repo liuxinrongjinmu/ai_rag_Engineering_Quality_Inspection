@@ -2,13 +2,101 @@
 文档加载器模块
 将多格式文档（Markdown/PDF/Word/TXT/Excel）转换为LangChain Document
 """
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from pathlib import Path
 from loguru import logger
 import hashlib
 import re
 
 from langchain_core.documents import Document
+
+
+# ── 文档名智能提取 ────────────────────────────────────────────
+
+def _is_opaque_filename(stem: str) -> bool:
+    """
+    判断文件名是否无意义（纯数字/字母ID，不含中文或可读英文词组）
+    如 P020240607597845867899、F80-1 等为有意义名
+    """
+    if not stem:
+        return True
+    # 含中文 = 有意义
+    if re.search(r'[\u4e00-\u9fff]', stem):
+        return False
+    # 含常见规范编号 (JTG/GB/DB/JT等) = 有意义
+    if re.search(r'[A-Z]{2,}[\s/]?[T0-9]', stem):
+        return False
+    # 纯字母数字超过12位 = 大概率是随机ID
+    if len(stem) > 12 and re.fullmatch(r'[A-Za-z0-9_\-]+', stem):
+        return True
+    # 纯数字超过8位 = 大概率是随机ID
+    if len(stem) > 8 and re.fullmatch(r'\d+', stem):
+        return True
+    return False
+
+
+def _extract_title_from_content(content: str) -> Optional[str]:
+    """
+    从文档内容中提取标题（跳过通用H1，取第二个或更具体的标题）
+    """
+    if not content:
+        return None
+    # 匹配所有 Markdown H1: # 标题
+    h1_matches = re.findall(r'^#\s+(.+?)(?:\n|$)', content.strip(), re.MULTILINE)
+
+    # 过滤掉过于通用的标题（如"中华人民共和国行业标准"）
+    GENERIC_TITLES = {
+        r'中华人民共和国', r'行业标准', r'国家标准', r'交通部.?公告',
+        r'前言', r'目次', r'目录', r'总则', r'术语', r'符号',
+    }
+    generic_pattern = re.compile('|'.join(GENERIC_TITLES))
+
+    for title in h1_matches:
+        title = title.strip()
+        if len(title) >= 4 and not generic_pattern.search(title):
+            return title
+
+    # 如果所有 H1 都太泛，取第一个作为兜底
+    if h1_matches:
+        title = h1_matches[0].strip()
+        if len(title) >= 4:
+            return title
+
+    # 无 H1 时，尝试纯文本首行
+    first_line = content.strip().split('\n')[0].strip()
+    if len(first_line) >= 4 and len(first_line) <= 80:
+        return first_line
+    return None
+
+
+def smart_doc_name(file_path: Path, content: str = "") -> str:
+    """
+    智能提取文档名：文件名有意义则用文件名，否则从内容中提取标题
+
+    :param file_path: 文件路径
+    :param content: 文件内容（用于无意义文件名时的标题提取）
+    :return: 有意义的文档名（已做字符归一化）
+    """
+    stem = file_path.stem
+
+    # 字符归一化：全角字符 → 半角字符
+    # 例如 JT∕T1181 → JT/T1181（全角斜线 U+2215 → 半角斜线 U+002F）
+    CHAR_NORMALIZE = {
+        '\u2215': '/',   # ∕ 全角斜线 → /
+        '\uff0f': '/',   # ／ 全角斜线 → /
+        '\uff1a': ':',   # ： 全角冒号 → :
+    }
+    for full, half in CHAR_NORMALIZE.items():
+        stem = stem.replace(full, half)
+
+    if not _is_opaque_filename(stem):
+        return stem
+    # 文件名无意义，尝试从内容提取
+    title = _extract_title_from_content(content)
+    if title:
+        logger.info(f"doc_name 自动提取: '{stem}' → '{title}'")
+        return title
+    return stem
 
 
 class TxtLoader:
@@ -51,7 +139,7 @@ class TxtLoader:
                 return []
 
             doc_id = hashlib.md5(self.file_path.name.encode()).hexdigest()[:16]
-            doc_name = self.file_path.stem
+            doc_name = smart_doc_name(self.file_path, text)
 
             metadata = {
                 "doc_id": doc_id,
@@ -112,7 +200,7 @@ class PDFLoader:
             return []
 
         doc_id = hashlib.md5(self.file_path.name.encode()).hexdigest()[:16]
-        doc_name = self.file_path.stem
+        doc_name = smart_doc_name(self.file_path, text)
 
         metadata = {
             "doc_id": doc_id,
@@ -294,7 +382,7 @@ class WordLoader:
                 return []
 
             doc_id = hashlib.md5(self.file_path.name.encode()).hexdigest()[:16]
-            doc_name = self.file_path.stem
+            doc_name = smart_doc_name(self.file_path, text)
 
             metadata = {
                 "doc_id": doc_id,
@@ -365,7 +453,7 @@ class MarkdownLoader:
                 return []
 
             doc_id = hashlib.md5(self.file_path.name.encode()).hexdigest()[:16]
-            doc_name = self.file_path.stem
+            doc_name = smart_doc_name(self.file_path, text)
 
             metadata = {
                 "doc_id": doc_id,

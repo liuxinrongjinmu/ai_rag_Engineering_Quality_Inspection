@@ -22,14 +22,17 @@ def get_chroma_retriever(top_k: int = 5) -> "BaseRetriever":
     """
     global _chroma_retriever_instance
 
-    if _chroma_retriever_instance is None:
-        from app.infrastructure.vectorstore import get_vectorstore
+    from app.infrastructure.vectorstore import get_vectorstore
 
-        vectorstore = get_vectorstore()
+    vectorstore = get_vectorstore()
+    if _chroma_retriever_instance is None:
         _chroma_retriever_instance = vectorstore.as_retriever(
             search_type="similarity",
             search_kwargs={"k": top_k},
         )
         logger.info(f"Chroma检索器初始化成功: top_k={top_k}")
+    else:
+        # 确保每次调用都使用传入的 top_k（缓存实例不更新会导致召回数量固定）
+        _chroma_retriever_instance.search_kwargs["k"] = top_k
 
     return _chroma_retriever_instance

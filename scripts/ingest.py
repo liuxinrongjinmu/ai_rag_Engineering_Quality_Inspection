@@ -103,6 +103,12 @@ def main():
     if bm25_retriever:
         save_bm25_retriever(bm25_retriever, str(bm25_path))
 
+    # 5. 递增知识库版本号，使所有查询缓存自动失效
+    logger.info("步骤5: 更新知识库版本号并清除查询缓存...")
+    from app.utils.cache import bump_kb_generation
+
+    bump_kb_generation()
+
     elapsed = round(time.time() - start_time, 2)
     logger.info(f"入库完成! 共{len(safe_chunks)}个切片, 耗时{elapsed}秒")
     print(f"\n入库统计:")

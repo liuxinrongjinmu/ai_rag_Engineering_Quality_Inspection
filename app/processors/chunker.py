@@ -101,6 +101,10 @@ class TextChunker:
                 overview_added = True
                 logger.debug(f"小文档概览切片已追加: {doc.metadata.get('doc_name', '?')} ({doc_len}字符)")
 
+            # 小文档已生成全文档概览切片，避免再按常规方式切分导致重复
+            if overview_added:
+                continue
+
             try:
                 if doc_type == "excel":
                     chunks = self._split_excel_document(doc, chunk_index)
@@ -116,9 +120,6 @@ class TextChunker:
             if chunks:
                 all_chunks.extend(chunks)
                 chunk_index += len(chunks)
-
-            # 概览切片追加后跳过了 chunk_index 递增，需要重新编号后续切片
-            # （已通过 split_document 内的 start_index 参数自然处理）
 
         logger.info(f"切片完成: {len(documents)}个文档 -> {len(all_chunks)}个切片")
         return all_chunks
@@ -382,7 +383,102 @@ class TextChunker:
                 metadata=chunk_meta,
             ))
 
+        # 对分类/项目清单类表格，额外追加一个全表概览切片，
+        # 确保"有哪些""分为几类"等 overview 问题能命中完整列表。
+        overview_chunk = self._build_table_overview(
+            all_rows, header_cells, caption, metadata, start_index + len(chunks)
+        )
+        if overview_chunk:
+            chunks.append(overview_chunk)
+
         return chunks
+
+    def _build_table_overview(
+        self,
+        all_rows: List[List[str]],
+        header_cells: List[str],
+        caption: str,
+        metadata: Dict[str, Any],
+        chunk_index: int,
+    ) -> Optional[Document]:
+        """
+        为分类/项目清单类表格构建全表概览切片。
+
+        当表头包含"类别/项目/参数/指标"等列，且数据行较多时，
+        生成一个汇总切片（chunk_type=overview），把每行的类别和项目
+        按原样聚合，供"有哪些检测方法/关键参数"等 overview 查询直接命中。
+        """
+        header_text = " | ".join(header_cells)
+
+        # 识别"类别"列和"项目/参数"列（两列必须不同）
+        category_idx = self._find_header_index(header_cells, [
+            "类别", "类型", "材料", "名称", "等级", "级别",
+            "试验项目", "用途", "指标类别", "项目名称", "试验方法",
+        ])
+        # 项目/参数列在除类别列之外的列中查找，避免与"试验类别"等混淆
+        candidate_indices = [i for i in range(len(header_cells)) if i != category_idx]
+        item_idx = None
+        for idx in candidate_indices:
+            cell_lower = header_cells[idx].lower()
+            if any(kw in cell_lower for kw in [
+                "项目", "参数", "指标", "内容", "检测", "要求",
+                "说明", "条件", "方法", "描述", "定义", "规定",
+            ]):
+                item_idx = idx
+                break
+
+        # 宽松匹配：如果找不到明确的类别+项目两列，尝试用前两列作为概览
+        if category_idx is None or item_idx is None:
+            if len(header_cells) >= 2 and len(all_rows) >= 2:
+                category_idx = 0
+                item_idx = 1
+            else:
+                return None
+
+        # 至少需要 2 个数据行才值得生成概览
+        data_rows = [r for r in all_rows if r != header_cells and len(r) > max(category_idx, item_idx)]
+        if len(data_rows) < 2:
+            return None
+
+        overview_lines = [f"表头: {caption or ''}", f"列名: {header_text}", ""]
+        for row in data_rows:
+            category = row[category_idx].strip() if category_idx < len(row) else ""
+            item = row[item_idx].strip() if item_idx < len(row) else ""
+            if category and item:
+                overview_lines.append(f"{category}: {item}")
+
+        if len(overview_lines) <= 3:
+            return None
+
+        content = "\n".join(overview_lines)
+        tags = self._build_semantic_tags(content, metadata, "overview")
+        if tags:
+            content = f"{tags}\n{content}"
+
+        chunk_meta = metadata.copy()
+        chunk_meta.update({
+            "chunk_index": chunk_index,
+            "chunk_type": "overview",
+            "is_overview": True,
+            "table_caption": caption,
+            "table_header": header_text,
+        })
+
+        return Document(page_content=content, metadata=chunk_meta)
+
+    def _find_header_index(self, header_cells: List[str], keywords: List[str]) -> Optional[int]:
+        """
+        在表头中查找包含任一关键词的列索引，优先返回最长匹配。
+        """
+        best_idx = None
+        best_len = 0
+        for idx, cell in enumerate(header_cells):
+            cell_lower = cell.lower()
+            for kw in keywords:
+                if kw in cell_lower and len(cell) > best_len:
+                    best_idx = idx
+                    best_len = len(cell)
+        return best_idx
 
     def _find_table_caption_for_html(self, full_text: str, table_html: str) -> str:
         """
@@ -502,11 +598,13 @@ class TextChunker:
         header_text = " | ".join(header_cells)
         chunks = []
 
+        parsed_rows: List[List[str]] = []
         for i, line in enumerate(data_lines):
             cells = [c.strip() for c in line.strip('|').split('|')]
             cells = [c for c in cells if c]
             if not cells:
                 continue
+            parsed_rows.append(cells)
 
             # 生成 "列名: 值" 的键值对文本
             kv_parts = []
@@ -546,6 +644,14 @@ class TextChunker:
 
             chunks.append(Document(page_content=content, metadata=chunk_metadata))
 
+        # Markdown 表格也尝试生成全表概览切片
+        overview_chunk = self._build_table_overview(
+            parsed_rows, header_cells, table_caption or nearest_header or "",
+            metadata, start_index + len(chunks)
+        )
+        if overview_chunk:
+            chunks.append(overview_chunk)
+
         return chunks
 
     def _split_text_table(
@@ -571,12 +677,14 @@ class TextChunker:
             header_cells = ["项目", "内容"]
 
         chunks = []
+        parsed_rows: List[List[str]] = []
         for i, line in enumerate(data_lines):
             if not line or '---' in line:
                 continue
             cells = [c.strip() for c in re.split(delimiter, line) if c.strip()]
             if len(cells) < 1:
                 continue
+            parsed_rows.append(cells)
 
             kv_parts = []
             for j, cell in enumerate(cells):
@@ -605,6 +713,14 @@ class TextChunker:
                 content = f"{tags}\n{content}"
 
             chunks.append(Document(page_content=content, metadata=chunk_metadata))
+
+        # 文本/Word/PDF 表格也尝试生成全表概览切片
+        header_text = " | ".join(header_cells)
+        overview_chunk = self._build_table_overview(
+            parsed_rows, header_cells, "", metadata, start_index + len(chunks)
+        )
+        if overview_chunk:
+            chunks.append(overview_chunk)
 
         return chunks
 
@@ -790,7 +906,8 @@ class TextChunker:
         chunk_type: str,
     ) -> str:
         """
-        根据切片类型和内容生成语义标签前缀，辅助 Embedding 对齐
+        根据切片类型和内容生成语义标签前缀，辅助 Embedding 对齐。
+        对于表格行，额外生成自然语言概要，帮助 LLM 快速理解行内容。
 
         :param content: 切片文本
         :param metadata: 切片元数据
@@ -810,6 +927,18 @@ class TextChunker:
                 tags.append("技术标准")
             if any(kw in content or kw in header for kw in ["检测", "试验", "取样", "频率"]):
                 tags.append("检测要求")
+
+            # 为表格行生成自然语言概要，帮助 LLM 读懂表格
+            summary = self._build_table_row_summary(content, metadata)
+            if summary:
+                tags.append(summary)
+
+        # 概览/目录类切片：直接打上分类目录标签，帮助 overview 查询对齐
+        if chunk_type == "overview" or metadata.get("is_overview"):
+            tags.append("文档概览")
+            tags.append("分类目录")
+            if any(kw in content or kw in header for kw in ["检测", "试验", "项目", "参数", "指标"]):
+                tags.append("检测项目")
 
         # 条例类标签
         if chunk_type == "article":
@@ -857,6 +986,46 @@ class TextChunker:
                     tags.append("试验步骤")
 
         return f"[{'] ['.join(tags)}]" if tags else ""
+
+    def _build_table_row_summary(
+        self,
+        content: str,
+        metadata: Dict[str, Any],
+    ) -> str:
+        """
+        为表格行生成自然语言概要，帮助 LLM 快速理解行内容。
+
+        例： "检测项目: 钢筋原材 | 频率: 每批不超过60吨"
+          → "概要：钢筋原材每批不超过60吨"
+
+        :param content: 表格行内容
+        :param metadata: 行元数据
+        :return: 概要文本，作为标签的一部分
+        """
+        # 提取 key-value 对
+        kv_pairs = re.findall(r'([^:|]+)[:：]\s*([^|]+)', content)
+        if len(kv_pairs) < 2:
+            return ""
+
+        # 构造概要语句：去掉前缀和分隔符，用自然语言连接
+        meaningful_values = []
+        skip_keys = {"表头", "列名", "章节", "表格", "序号"}
+        for k, v in kv_pairs:
+            k_clean = k.strip()
+            v_clean = v.strip()
+            if k_clean in skip_keys or not v_clean or v_clean in ("—", "-", "/"):
+                continue
+            meaningful_values.append(v_clean)
+
+        if not meaningful_values:
+            return ""
+
+        summary = "概要：" + "，".join(meaningful_values[:6])
+        # 截断过长概要
+        if len(summary) > 120:
+            summary = summary[:117] + "..."
+
+        return summary
 
     def _fallback_split(
         self,

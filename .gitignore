@@ -65,7 +65,8 @@ htmlcov/
 *.bak
 *.tar.gz
 
-# Script backup
+# Backup
+.backup_cleanup/
 scripts/.backup_*/
 
 # Frontend

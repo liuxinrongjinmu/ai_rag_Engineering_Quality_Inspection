@@ -210,6 +210,29 @@ class Reranker:
                 matched_signals = [s for s in strong_signals if s in content]
                 score_boost += 0.15 * len(matched_signals)
 
+            # 目录/概览切片加权：包含章节列表、试验方法清单的切片通常是
+            # 概览类问题的最佳答案，优先提升（数值较大，确保在语义重排融合中仍占优）
+            if chunk_type == "overview" or metadata.get("is_overview"):
+                score_boost += 2.0
+            elif self._looks_like_directory_or_catalog(content):
+                score_boost += 1.5
+
+            # 表格行中命中“项目/参数/指标/试验”等关键词时，额外加权
+            if chunk_type == "table_row" and query_entity_keywords:
+                if any(kw in content for kw in ['试验项目', '参数', '检测项目', '指标']):
+                    score_boost += 0.5
+
+                # 表格行的"类别"字段直接命中查询实体词时大幅加权
+                category_match = re.search(r'(?:试验类别|类别)[:：]\s*([^|\n]+)', content)
+                if category_match:
+                    category_value = category_match.group(1).strip()
+                    if any(kw in category_value for kw in query_entity_keywords):
+                        score_boost += 2.0
+
+            # 过滤因多行单元格错位产生的垃圾表格行
+            if self._is_malformed_table_row(doc):
+                score_boost -= 3.0
+
             # 小文档加权：切片数较少的文档（<300切片）在索引中覆盖不足，
             # 当查询命中时将对应切片略微提升，避免被大文档淹没
             doc_chunk_count = metadata.get("doc_total_chunks", 0)
@@ -218,7 +241,7 @@ class Reranker:
             elif 0 < doc_chunk_count < 300:
                 score_boost += 0.03
 
-            if score_boost > 0 and "score" in metadata:
+            if score_boost > 0:
                 metadata["score"] = float(metadata.get("score", 0.0)) + score_boost
 
             boosted.append(doc)
@@ -239,6 +262,13 @@ class Reranker:
         从查询中提取核心实体词（使用 jieba 分词），用于内容匹配加权
         """
         import jieba
+
+        # 添加领域复合词，避免"细集料"等被错误切分
+        for word in [
+            "细集料", "粗集料", "填料", "机制砂", "石屑", "水泥混凝土", "沥青混凝土",
+            "集料", "粉煤灰", "压实度", "含水率", "抗压强度",
+        ]:
+            jieba.add_word(word, freq=1000)
 
         stop_words = {
             '的', '了', '和', '是', '在', '有', '对', '为', '与', '及', '或',
@@ -268,6 +298,50 @@ class Reranker:
                     signals.extend(variants)
                     break
         return list(set(signals))
+
+    def _looks_like_directory_or_catalog(self, content: str) -> bool:
+        """
+        判断内容是否像目录/章节列表/方法清单。
+        例如包含"第X章""T0XXX""细集料XX试验"等连续列举结构。
+        """
+        if not content:
+            return False
+        # 目录/章节标题模式
+        header_patterns = [
+            r'第\s*[一二三四五六七八九十\d]+\s*[章节]',
+            r'^[#\s]*[一二三四五六七八九十][、.\s]',
+            r'T\s*\d{4}\s*[—\-]\s*\d{4}',
+            r'T\d{4}[-—]\d{4}',
+        ]
+        header_hits = sum(1 for p in header_patterns if re.search(p, content, re.MULTILINE))
+
+        # 试验方法列表特征：出现多个"XX试验"条目
+        test_method_hits = len(re.findall(r'(?:细集料|粗集料|填料|集料)[^\n，。]{0,15}试验', content))
+
+        # 目录切片通常包含多个连续条目
+        has_catalog_keywords = bool(re.search(r'目录|章节|本章|本章包括|本章主要内容|试验项目|本节|本章共', content))
+
+        # 参数/项目清单：由顿号、逗号分隔的多个技术术语连续出现（如"筛分、含泥量、泥块含量"）
+        item_terms = re.findall(
+            r'(?:[\u4e00-\u9fa5]{2,10}|[a-zA-Z0-9\-]{2,20})(?=[，,、])',
+            content
+        )
+        has_item_list = len(item_terms) >= 3 and bool(
+            re.search(r'项目|参数|指标|方法|试验|检测', content)
+        )
+
+        return header_hits >= 2 or test_method_hits >= 3 or has_catalog_keywords or has_item_list
+
+    def _is_malformed_table_row(self, doc: Document) -> bool:
+        """识别因多行单元格错位产生的垃圾表格行"""
+        if doc.metadata.get("chunk_type") != "table_row":
+            return False
+        content = doc.page_content
+        if "试验类别: 必要时做" in content or "类别: 必要时做" in content:
+            return True
+        if re.search(r'序号[:：]\s*\D', content):
+            return True
+        return False
 
     def _semantic_rerank(
         self,
@@ -333,6 +407,9 @@ class Reranker:
         """
         query_keywords = self._extract_entity_keywords(query) if query else []
 
+        # 先对本地结果做表格/概览加权，确保回退策略能利用这些信号
+        local_results = self._boost_table_rows(local_results, query)
+
         # 找出 doc_name 命中查询实体词的文档名集合，并按命中数排序
         doc_name_hits: dict = {}
         if query_keywords:
@@ -355,13 +432,7 @@ class Reranker:
             else:
                 other_docs.append(doc)
 
-        # 命中文档按关键词命中数降序、同组内按原位置排序
-        def _sort_by_position(docs: list, orig_list: list) -> list:
-            """按在原列表中的出现顺序排序"""
-            pos = {id(d): i for i, d in enumerate(orig_list)}
-            return sorted(docs, key=lambda d: pos.get(id(d), 9999))
-
-        # 先按命中数分组，每组内按原位置排序
+        # 命中文档按关键词命中数降序、同组内按已有分数降序排
         by_hits: dict = {}
         for doc in matched_docs:
             doc_name = doc.metadata.get("doc_name", "")
@@ -372,9 +443,14 @@ class Reranker:
 
         matched_docs = []
         for hits in sorted(by_hits.keys(), reverse=True):
-            matched_docs.extend(_sort_by_position(by_hits[hits], local_results))
+            by_hits[hits].sort(
+                key=lambda d: float(d.metadata.get("score", 0.0)), reverse=True
+            )
+            matched_docs.extend(by_hits[hits])
 
-        other_docs = _sort_by_position(other_docs, local_results)
+        other_docs.sort(
+            key=lambda d: float(d.metadata.get("score", 0.0)), reverse=True
+        )
 
         # 合并：命中文档全部在前，无关文档在后
         reordered = matched_docs + other_docs
@@ -382,11 +458,34 @@ class Reranker:
         scored_results = []
         for i, doc in enumerate(reordered):
             score = self.local_weight * (1.0 - min(i, 20) * 0.03)
+            # 继承已有 Boost 分数
+            score += float(doc.metadata.get("score", 0.0))
             # doc_name 匹配加权（兜底）
             doc_name = doc.metadata.get("doc_name", "")
             if query_keywords and doc_name:
                 name_hits = sum(1 for kw in query_keywords if kw in doc_name)
                 score += 2.0 * name_hits
+
+            # 目录/概览切片在回退策略中额外大幅加权
+            chunk_type = doc.metadata.get("chunk_type", "")
+            is_overview_query = bool(query) and bool(
+                re.search(r'有哪些|包含哪些|分为几[类种级个]|关键参数|检测方法|试验项目|目录|章节', query)
+            )
+            if chunk_type == "overview" or doc.metadata.get("is_overview"):
+                score += 5.0
+            elif self._looks_like_directory_or_catalog(doc.page_content):
+                score += 4.0 if is_overview_query else 1.5
+
+            # 内容直接命中查询核心实体词时额外加权（如"细集料"出现在内容中）
+            if query_keywords:
+                content_hits = sum(1 for kw in query_keywords if kw in doc.page_content)
+                score += 1.0 * content_hits
+
+            # 概览类查询中，命中的 overview 切片再额外大幅加权，
+            # 确保完整清单优先于单行表格
+            if is_overview_query and (chunk_type == "overview" or doc.metadata.get("is_overview")):
+                score += 5.0
+
             scored_results.append((score, doc))
 
         for i, doc in enumerate(web_results):

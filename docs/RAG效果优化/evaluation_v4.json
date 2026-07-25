@@ -1,0 +1,103 @@
+{
+  "version": "v4",
+  "total_cases": 108,
+  "avg_recall": 0.699,
+  "avg_precision": 0.644,
+  "avg_f1": 0.657,
+  "source_hit_rate": 0.769,
+  "avg_time_ms": 4165.9,
+  "by_category": {
+    "事实型": {
+      "count": 57,
+      "avg_f1": 0.609,
+      "source_hit": 0.737
+    },
+    "推理型": {
+      "count": 16,
+      "avg_f1": 0.769,
+      "source_hit": 0.938
+    },
+    "模糊查询": {
+      "count": 2,
+      "avg_f1": 0.625,
+      "source_hit": 0.5
+    },
+    "列举型": {
+      "count": 21,
+      "avg_f1": 0.652,
+      "source_hit": 0.714
+    },
+    "多关键词": {
+      "count": 2,
+      "avg_f1": 0.167,
+      "source_hit": 0.0
+    },
+    "跨文档": {
+      "count": 10,
+      "avg_f1": 0.861,
+      "source_hit": 1.0
+    }
+  },
+  "by_document": {
+    "JTG F80-1-2017": {
+      "count": 8,
+      "avg_f1": 0.617,
+      "source_hit": 1.0
+    },
+    "常用45项": {
+      "count": 17,
+      "avg_f1": 0.609,
+      "source_hit": 0.529
+    },
+    "JTG 3431-2024": {
+      "count": 8,
+      "avg_f1": 0.644,
+      "source_hit": 0.75
+    },
+    "JTG 3432-2024": {
+      "count": 13,
+      "avg_f1": 0.824,
+      "source_hit": 0.769
+    },
+    "JTG 3441-2024": {
+      "count": 8,
+      "avg_f1": 0.573,
+      "source_hit": 1.0
+    },
+    "JTG 3430-2020": {
+      "count": 8,
+      "avg_f1": 0.399,
+      "source_hit": 0.125
+    },
+    "JTG 3420-2020": {
+      "count": 12,
+      "avg_f1": 0.646,
+      "source_hit": 1.0
+    },
+    "JTG E50-2006": {
+      "count": 8,
+      "avg_f1": 0.638,
+      "source_hit": 0.75
+    },
+    "DB43T1206-2016": {
+      "count": 8,
+      "avg_f1": 0.875,
+      "source_hit": 1.0
+    },
+    "JT/T1181-2018": {
+      "count": 8,
+      "avg_f1": 0.69,
+      "source_hit": 1.0
+    },
+    "塔吊报警": {
+      "count": 5,
+      "avg_f1": 0.674,
+      "source_hit": 1.0
+    },
+    "检测频率": {
+      "count": 5,
+      "avg_f1": 0.65,
+      "source_hit": 0.4
+    }
+  }
+}
